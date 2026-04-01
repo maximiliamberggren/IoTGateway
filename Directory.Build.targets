@@ -1,0 +1,7 @@
+<Project>
+  <ItemGroup Condition="'$(MSBuildProjectName)' != 'Waher.Runtime.Inventory.Generator' and Exists('$(MSBuildThisFileDirectory)Runtime\Waher.Runtime.Inventory.Generator\Waher.Runtime.Inventory.Generator.csproj')">
+    <ProjectReference Include="$(MSBuildThisFileDirectory)Runtime\Waher.Runtime.Inventory.Generator\Waher.Runtime.Inventory.Generator.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+</Project>

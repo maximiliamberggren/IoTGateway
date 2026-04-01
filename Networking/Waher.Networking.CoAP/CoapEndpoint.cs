@@ -90,13 +90,12 @@ namespace Waher.Networking.CoAP
 
 			foreach (Type T in Types.GetTypesImplementingInterface(typeof(ICoapOption)))
 			{
-				ConstructorInfo CI = Types.GetDefaultConstructor(T);
-				if (CI is null)
-					continue;
-
 				try
 				{
-					Option = (CoapOption)CI.Invoke(Types.NoParameters);
+					Option = Types.Create(true, T) as CoapOption;
+					if (Option is null)
+						continue;
+
 					if (Options.ContainsKey(Option.OptionNumber))
 						throw new Exception("Option number " + Option.OptionNumber + " already defined.");
 
@@ -116,13 +115,12 @@ namespace Waher.Networking.CoAP
 
 			foreach (Type T in Types.GetTypesImplementingInterface(typeof(ICoapContentFormat)))
 			{
-				ConstructorInfo CI = Types.GetDefaultConstructor(T);
-				if (CI is null)
-					continue;
-
 				try
 				{
-					ContentFormat = (ICoapContentFormat)CI.Invoke(Types.NoParameters);
+					ContentFormat = Types.Create(true, T) as ICoapContentFormat;
+					if (ContentFormat is null)
+						continue;
+
 					if (ByCode.ContainsKey(ContentFormat.ContentFormat))
 						throw new Exception("Content format number " + ContentFormat.ContentFormat + " already defined.");
 

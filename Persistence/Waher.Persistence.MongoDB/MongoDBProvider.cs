@@ -103,18 +103,13 @@ namespace Waher.Persistence.MongoDB
 			this.defaultCollectionName = DefaultCollectionName;
 			this.defaultCollection = this.GetCollection(this.defaultCollectionName);
 
-			ConstructorInfo DefaultConstructor;
 			IObjectSerializer S;
 
 			foreach (Type T in Waher.Runtime.Inventory.Types.GetTypesImplementingInterface(typeof(IObjectSerializer)))
 			{
 				try
 				{
-					DefaultConstructor = Types.GetDefaultConstructor(T);
-					if (DefaultConstructor is null)
-						continue;
-
-					S = DefaultConstructor.Invoke(Types.NoParameters) as IObjectSerializer;
+					S = Types.Create(true, T) as IObjectSerializer;
 					if (S is null)
 						continue;
 				}
@@ -206,7 +201,7 @@ namespace Waher.Persistence.MongoDB
 					Type ElementType = Type.GetElementType();
 					Type T = Waher.Runtime.Inventory.Types.GetType(typeof(ByteArraySerializer).FullName.Replace("ByteArray", "Array"));
 					Type SerializerType = T.MakeGenericType(new Type[] { ElementType });
-					Result = (IObjectSerializer)Activator.CreateInstance(SerializerType, this);
+					Result = (IObjectSerializer)Types.Create(false, SerializerType, this);
 				}
 				else if (TI.IsGenericType)
 				{

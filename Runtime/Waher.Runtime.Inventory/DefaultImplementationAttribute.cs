@@ -78,6 +78,13 @@ namespace Waher.Runtime.Inventory
 					return true;
 			}
 
+			if (Types.TryGetGeneratedMetadata(Type, out GeneratedTypeMetadata Metadata) &&
+				!(Metadata.DefaultImplementationType is null))
+			{
+				DefaultImplementation = Metadata.DefaultImplementationType;
+				return true;
+			}
+
 			TypeInfo TI = Type.GetTypeInfo();
 			DefaultImplementationAttribute Attr = TI.GetCustomAttribute<DefaultImplementationAttribute>(true);
 

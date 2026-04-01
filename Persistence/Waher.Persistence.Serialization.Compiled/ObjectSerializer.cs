@@ -306,7 +306,7 @@ namespace Waher.Persistence.Serialization
 #if COMPILED
 			this.compiled = Compiled;
 #endif
-			if (Type.IsClass && !Type.IsAbstract && Types.GetDefaultConstructor(Type) is null)
+			if (Type.IsClass && !Type.IsAbstract && !Types.HasDefaultConstructor(Type))
 				throw new SerializationException("Objects of type " + Type.FullName + " cannot be serialized: The class must have a default constructor.", Type);
 
 			if (this.type == typeof(bool) ||
@@ -3662,7 +3662,7 @@ namespace Waher.Persistence.Serialization
 					sb.Append(this.context.Id);
 
 					Type T = A.GetType(sb.ToString());
-					this.customSerializer = (IObjectSerializer)Activator.CreateInstance(T, this.context);
+					this.customSerializer = (IObjectSerializer)Types.Create(false, T, this.context);
 				}
 				catch (FileLoadException ex)
 				{
@@ -4059,7 +4059,7 @@ namespace Waher.Persistence.Serialization
 				if (DataType.Value != TYPE_OBJECT)
 					throw new SerializationException("Object expected.", this.type);
 
-				Result = Activator.CreateInstance(this.type);
+				Result = Types.Create(false, this.type);
 
 				if (!(this.objectIdMember is null))
 				{

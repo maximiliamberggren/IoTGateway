@@ -2155,13 +2155,11 @@ namespace Waher.Networking.XMPP.Concentrator
 
 			foreach (Type T in Types.GetTypesImplementingInterface(typeof(INode)))
 			{
-				ConstructorInfo CI = Types.GetDefaultConstructor(T);
-				if (CI is null)
-					continue;
-
 				try
 				{
-					PresumptiveChild = (INode)CI.Invoke(Types.NoParameters);
+					PresumptiveChild = Types.Create(true, T) as INode;
+					if (PresumptiveChild is null)
+						continue;
 
 					if (await Node.AcceptsChildAsync(PresumptiveChild) && await PresumptiveChild.AcceptsParentAsync(Node))
 					{
@@ -2227,18 +2225,13 @@ namespace Waher.Networking.XMPP.Concentrator
 				return;
 			}
 
-			ConstructorInfo CI = Types.GetDefaultConstructor(Type);
-			if (CI is null)
-			{
-				await e.IqError(new StanzaErrors.ItemNotFoundException(await GetErrorMessage(Language, 11, "Invalid type."), e.IQ));
-				return;
-			}
-
 			INode PresumptiveChild;
 
 			try
 			{
-				PresumptiveChild = (INode)CI.Invoke(Types.NoParameters);
+				PresumptiveChild = Types.Create(true, Type) as INode;
+				if (PresumptiveChild is null)
+					throw new Exception("Unable to instantiate node.");
 			}
 			catch (Exception)
 			{
@@ -2301,18 +2294,13 @@ namespace Waher.Networking.XMPP.Concentrator
 				return;
 			}
 
-			ConstructorInfo CI = Types.GetDefaultConstructor(Type);
-			if (CI is null)
-			{
-				await e.IqError(new StanzaErrors.ItemNotFoundException(await GetErrorMessage(Language, 11, "Invalid type."), e.IQ));
-				return;
-			}
-
 			INode PresumptiveChild;
 
 			try
 			{
-				PresumptiveChild = (INode)CI.Invoke(Types.NoParameters);
+				PresumptiveChild = Types.Create(true, Type) as INode;
+				if (PresumptiveChild is null)
+					throw new Exception("Unable to instantiate node.");
 			}
 			catch (Exception)
 			{

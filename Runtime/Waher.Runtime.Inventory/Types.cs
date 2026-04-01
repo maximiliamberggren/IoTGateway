@@ -15,6 +15,8 @@ namespace Waher.Runtime.Inventory
 	{
 		private static readonly SortedDictionary<string, Type> types = new SortedDictionary<string, Type>();
 		private static readonly SortedDictionary<string, Type> registeredTypes = new SortedDictionary<string, Type>();
+		private static readonly Dictionary<Type, GeneratedTypeMetadata> generatedTypes = new Dictionary<Type, GeneratedTypeMetadata>();
+		private static readonly SortedDictionary<string, SortedDictionary<string, Type>> explicitInterfaceImplementations = new SortedDictionary<string, SortedDictionary<string, Type>>();
 		private static readonly SortedDictionary<string, SortedDictionary<string, Type>> typesPerInterface = new SortedDictionary<string, SortedDictionary<string, Type>>();
 		private static readonly SortedDictionary<string, SortedDictionary<string, Type>> typesPerNamespace = new SortedDictionary<string, SortedDictionary<string, Type>>();
 		private static readonly SortedDictionary<string, SortedDictionary<string, bool>> namespacesPerNamespace = new SortedDictionary<string, SortedDictionary<string, bool>>();
@@ -28,6 +30,7 @@ namespace Waher.Runtime.Inventory
 		private static readonly Type[] noTypes = Array.Empty<Type>();
 		private static readonly object[] noParameters = Array.Empty<object>();
 		private static readonly object synchObject = new object();
+		private static readonly HashSet<string> invokedRegistrars = new HashSet<string>();
 		private static bool isInitialized = false;
 
 		static Types()
@@ -100,6 +103,119 @@ namespace Waher.Runtime.Inventory
 						}
 					}
 				}
+			}
+		}
+
+		/// <summary>
+		/// Registers generated metadata for a type.
+		/// </summary>
+		/// <param name="Metadata">Generated metadata.</param>
+		public static void RegisterGeneratedMetadata(GeneratedTypeMetadata Metadata)
+		{
+			if (Metadata is null)
+				throw new ArgumentNullException(nameof(Metadata));
+
+			if (Metadata.Type is null)
+				throw new ArgumentException("Metadata type cannot be null.", nameof(Metadata));
+
+			lock (synchObject)
+			{
+				if (generatedTypes.TryGetValue(Metadata.Type, out GeneratedTypeMetadata Existing))
+					Metadata = MergeMetadata(Existing, Metadata);
+
+				generatedTypes[Metadata.Type] = Metadata;
+
+				if (assemblies is null)
+					assemblies = new Assembly[] { Metadata.Type.Assembly };
+				else
+					CheckIncluded(ref assemblies, Metadata.Type.Assembly);
+
+				if (isInitialized)
+				{
+					SortedDictionary<string, Type> LastTypes = null;
+					string LastNamespace = string.Empty;
+					Dictionary<string, Type> TypeNameAliases = null;
+
+					IndexType(Metadata.Type, ref LastTypes, ref LastNamespace, ref TypeNameAliases);
+					IndexExplicitInterfaceImplementations();
+					IndexAliases(TypeNameAliases);
+				}
+			}
+		}
+
+		/// <summary>
+		/// Tries to get generated metadata for a type.
+		/// </summary>
+		/// <param name="Type">Type.</param>
+		/// <param name="Metadata">Generated metadata, if found.</param>
+		/// <returns>If generated metadata was found.</returns>
+		public static bool TryGetGeneratedMetadata(Type Type, out GeneratedTypeMetadata Metadata)
+		{
+			if (Type is null)
+			{
+				Metadata = null;
+				return false;
+			}
+
+			lock (synchObject)
+			{
+				return generatedTypes.TryGetValue(Type, out Metadata);
+			}
+		}
+
+		/// <summary>
+		/// Registers a factory for a type.
+		/// </summary>
+		/// <param name="Type">Type.</param>
+		/// <param name="Factory">Factory.</param>
+		public static void RegisterFactory(Type Type, Func<object> Factory)
+		{
+			if (Type is null)
+				throw new ArgumentNullException(nameof(Type));
+			if (Factory is null)
+				throw new ArgumentNullException(nameof(Factory));
+
+			RegisterGeneratedMetadata(new GeneratedTypeMetadata(Type,
+				Constructors: new GeneratedConstructorMetadata[]
+				{
+					new GeneratedConstructorMetadata(NoTypes, true, _ => Factory())
+				}));
+		}
+
+		/// <summary>
+		/// Registers an interface implementation explicitly.
+		/// </summary>
+		/// <param name="Contract">Contract type.</param>
+		/// <param name="Implementation">Implementation type.</param>
+		public static void RegisterInterfaceImplementation(Type Contract, Type Implementation)
+		{
+			if (Contract is null)
+				throw new ArgumentNullException(nameof(Contract));
+			if (Implementation is null)
+				throw new ArgumentNullException(nameof(Implementation));
+
+			string ContractName = Contract.FullName
+				?? throw new ArgumentException("Contract type must be named.", nameof(Contract));
+			string ImplementationName = Implementation.FullName
+				?? throw new ArgumentException("Implementation type must be named.", nameof(Implementation));
+
+			lock (synchObject)
+			{
+				if (!explicitInterfaceImplementations.TryGetValue(ContractName, out SortedDictionary<string, Type> Implementations))
+				{
+					Implementations = new SortedDictionary<string, Type>();
+					explicitInterfaceImplementations[ContractName] = Implementations;
+				}
+
+				Implementations[ImplementationName] = Implementation;
+
+				if (assemblies is null)
+					assemblies = new Assembly[] { Implementation.Assembly };
+				else
+					CheckIncluded(ref assemblies, Implementation.Assembly);
+
+				if (isInitialized)
+					IndexExplicitInterfaceImplementations();
 			}
 		}
 
@@ -364,6 +480,8 @@ namespace Waher.Runtime.Inventory
 				rootNamespaces.Clear();
 				qualifiedNames.Clear();
 				tryParseMethods.Clear();
+				defaultConstructors.Clear();
+				invokedRegistrars.Clear();
 			}
 
 			EventHandler h = OnInvalidated;
@@ -778,6 +896,8 @@ namespace Waher.Runtime.Inventory
 
 				foreach (Assembly Assembly in Assemblies)
 				{
+					InvokeGeneratedRegistrars(Assembly);
+
 					foreach (NamespaceAliasAttribute Alias in Assembly.GetCustomAttributes<NamespaceAliasAttribute>())
 					{
 						if (NamespaceAliases is null)
@@ -813,16 +933,12 @@ namespace Waher.Runtime.Inventory
 				foreach (Type Type in registeredTypes.Values)
 					IndexType(Type, ref LastTypes, ref LastNamespace, ref TypeNameAliases);
 
-				if (!(TypeNameAliases is null))
-				{
-					foreach (KeyValuePair<string, Type> P in TypeNameAliases)
-					{
-						if (types.TryGetValue(P.Key, out Type T))
-							Log.Error("Type alias conflicts with registered type.", P.Key, T.FullName);
-						else
-							types[P.Key] = P.Value;
-					}
-				}
+				foreach (GeneratedTypeMetadata Metadata in generatedTypes.Values)
+					IndexType(Metadata.Type, ref LastTypes, ref LastNamespace, ref TypeNameAliases);
+
+				IndexExplicitInterfaceImplementations();
+
+				IndexAliases(TypeNameAliases);
 
 				if (!(NamespaceAliases is null))
 				{
@@ -877,6 +993,7 @@ namespace Waher.Runtime.Inventory
 			string Namespace;
 			string ParentNamespace;
 			string InterfaceName;
+			GeneratedTypeMetadata Metadata;
 			int i;
 
 			if (string.IsNullOrEmpty(TypeName))
@@ -892,11 +1009,9 @@ namespace Waher.Runtime.Inventory
 			if (i >= 0)
 				RegisterQualifiedName(TypeName.Substring(i + 1), TypeName);
 
-			try
+			if (TryGetGeneratedMetadata(Type, out Metadata))
 			{
-				TypeInfo TI = Type.GetTypeInfo();
-
-				foreach (Type Interface in TI.ImplementedInterfaces)
+				foreach (Type Interface in Metadata.ImplementedInterfaces)
 				{
 					InterfaceName = Interface.FullName;
 					if (InterfaceName is null)
@@ -911,23 +1026,56 @@ namespace Waher.Runtime.Inventory
 					Types[TypeName] = Type;
 				}
 
-				foreach (TypeAliasAttribute Alias in TI.GetCustomAttributes<TypeAliasAttribute>(false))
+				foreach (string Alias in Metadata.TypeAliases)
 				{
 					if (TypeNameAliases is null)
 						TypeNameAliases = new Dictionary<string, Type>();
 
-					if (TypeNameAliases.ContainsKey(Alias.TypeName))
-						Log.Error("Type alias already registered.", Alias.TypeName, Type.FullName);
+					if (TypeNameAliases.ContainsKey(Alias))
+						Log.Error("Type alias already registered.", Alias, Type.FullName);
 					else
-						TypeNameAliases[Alias.TypeName] = Type;
+						TypeNameAliases[Alias] = Type;
 				}
 			}
-			catch (Exception)
+			else
 			{
-				// Implemented interfaces might not be accessible.
+				try
+				{
+					TypeInfo TI = Type.GetTypeInfo();
+
+					foreach (Type Interface in TI.ImplementedInterfaces)
+					{
+						InterfaceName = Interface.FullName;
+						if (InterfaceName is null)
+							continue;
+
+						if (!typesPerInterface.TryGetValue(InterfaceName, out Types))
+						{
+							Types = new SortedDictionary<string, Type>();
+							typesPerInterface[InterfaceName] = Types;
+						}
+
+						Types[TypeName] = Type;
+					}
+
+					foreach (TypeAliasAttribute Alias in TI.GetCustomAttributes<TypeAliasAttribute>(false))
+					{
+						if (TypeNameAliases is null)
+							TypeNameAliases = new Dictionary<string, Type>();
+
+						if (TypeNameAliases.ContainsKey(Alias.TypeName))
+							Log.Error("Type alias already registered.", Alias.TypeName, Type.FullName);
+						else
+							TypeNameAliases[Alias.TypeName] = Type;
+					}
+				}
+				catch (Exception)
+				{
+					// Implemented interfaces might not be accessible.
+				}
 			}
 
-			Namespace = Type.Namespace;
+			Namespace = Metadata?.Namespace ?? Type.Namespace;
 			if (Namespace is null)
 				return;
 
@@ -974,6 +1122,61 @@ namespace Waher.Runtime.Inventory
 			}
 
 			Types[TypeName] = Type;
+		}
+
+		private static void IndexAliases(Dictionary<string, Type> TypeNameAliases)
+		{
+			if (TypeNameAliases is null)
+				return;
+
+			foreach (KeyValuePair<string, Type> P in TypeNameAliases)
+			{
+				if (types.TryGetValue(P.Key, out Type T))
+					Log.Error("Type alias conflicts with registered type.", P.Key, T.FullName);
+				else
+					types[P.Key] = P.Value;
+			}
+		}
+
+		private static void IndexExplicitInterfaceImplementations()
+		{
+			foreach (KeyValuePair<string, SortedDictionary<string, Type>> P in explicitInterfaceImplementations)
+			{
+				if (!typesPerInterface.TryGetValue(P.Key, out SortedDictionary<string, Type> Types))
+				{
+					Types = new SortedDictionary<string, Type>();
+					typesPerInterface[P.Key] = Types;
+				}
+
+				foreach (KeyValuePair<string, Type> P2 in P.Value)
+					Types[P2.Key] = P2.Value;
+			}
+		}
+
+		private static void InvokeGeneratedRegistrars(Assembly Assembly)
+		{
+			foreach (AssemblyInventoryRegistrarAttribute Attr in Assembly.GetCustomAttributes<AssemblyInventoryRegistrarAttribute>())
+			{
+				string Key = Attr.RegistrarType.AssemblyQualifiedName + "|" + Attr.MethodName;
+				if (!invokedRegistrars.Add(Key))
+					continue;
+
+				MethodInfo MI = Attr.RegistrarType.GetRuntimeMethod(Attr.MethodName, NoTypes);
+				if (MI is null || !MI.IsStatic)
+				{
+					Log.Error("Unable to locate generated inventory registrar.", Attr.RegistrarType.FullName);
+					continue;
+				}
+
+				try
+				{
+					MI.Invoke(null, NoParameters);
+				}
+				catch (Exception ex)
+				{
+					Log.Exception(ex, Attr.RegistrarType.FullName);
+				}
+			}
 		}
 
 		private static void RegisterQualifiedName(string UnqualifiedName, string QualifiedName)
@@ -1040,7 +1243,7 @@ namespace Waher.Runtime.Inventory
 			Type T = GetType(TypeName)
 				?? throw new ArgumentException("Type not loaded: " + TypeName, nameof(TypeName));
 
-			return Activator.CreateInstance(T, Parameters);
+			return Create(false, T, Parameters);
 		}
 
 		/// <summary>
@@ -1057,6 +1260,15 @@ namespace Waher.Runtime.Inventory
 				throw new ArgumentNullException(nameof(Object));
 
 			Type T = Object.GetType();
+			if (TryGetGeneratedMetadata(T, out GeneratedTypeMetadata Metadata) &&
+				Metadata.TryGetMember(PropertyName, out GeneratedMemberMetadata Member))
+			{
+				if (!Member.IsPublic || !Member.CanRead || Member.Getter is null)
+					throw new ArgumentException("Property not readable or accessible.", nameof(PropertyName));
+
+				return Member.Getter(Object);
+			}
+
 			PropertyInfo PI = T.GetRuntimeProperty(PropertyName);
 			if (!(PI is null))
 			{
@@ -1092,6 +1304,16 @@ namespace Waher.Runtime.Inventory
 				throw new ArgumentNullException(nameof(Object));
 
 			Type T = Object.GetType();
+			if (TryGetGeneratedMetadata(T, out GeneratedTypeMetadata Metadata) &&
+				Metadata.TryGetMember(PropertyName, out GeneratedMemberMetadata Member))
+			{
+				if (!Member.IsPublic || !Member.CanWrite || Member.Setter is null)
+					throw new ArgumentException("Property not writable or accessible.", nameof(PropertyName));
+
+				Member.Setter(Object, Value);
+				return;
+			}
+
 			PropertyInfo PI = T.GetRuntimeProperty(PropertyName);
 			if (!(PI is null))
 			{
@@ -1418,9 +1640,22 @@ namespace Waher.Runtime.Inventory
 		/// <returns>Instance of <paramref name="Type"/>.</returns>
 		public static object Create(bool ReturnNullIfFail, Type Type, params object[] Arguments)
 		{
+			if (Arguments is null)
+				Arguments = NoParameters;
+
 			TypeInfo TI = Type.GetTypeInfo();
 			if (TI.IsPrimitive)
 				return Activator.CreateInstance(Type);
+
+			if (TryCreateGenerated(ReturnNullIfFail, Type, Arguments, out object Result))
+				return Result;
+
+			return CreateReflection(ReturnNullIfFail, Type, Arguments);
+		}
+
+		private static object CreateReflection(bool ReturnNullIfFail, Type Type, object[] Arguments)
+		{
+			TypeInfo TI = Type.GetTypeInfo();
 
 			ParameterInfo[] Parameters;
 			int i, NrParams, NrArgs = Arguments.Length;
@@ -1506,6 +1741,63 @@ namespace Waher.Runtime.Inventory
 			}
 		}
 
+		private static bool TryCreateGenerated(bool ReturnNullIfFail, Type Type, object[] Arguments, out object Result)
+		{
+			if (!TryGetGeneratedMetadata(Type, out GeneratedTypeMetadata Metadata) || Metadata.Constructors.Length == 0)
+			{
+				Result = null;
+				return false;
+			}
+
+			int i;
+			int NrArgs = Arguments.Length;
+			TypeInfo[] ArgTypes = NrArgs == 0 ? null : new TypeInfo[NrArgs];
+
+			for (i = 0; i < NrArgs; i++)
+				ArgTypes[i] = Arguments[i]?.GetType().GetTypeInfo();
+
+			for (int Pass = 0; Pass < 2; Pass++)
+			{
+				foreach (GeneratedConstructorMetadata Constructor in Metadata.Constructors)
+				{
+					if (Pass == 0 && !Constructor.IsPublic)
+						continue;
+
+					Type[] ParameterTypes = Constructor.ParameterTypes ?? NoTypes;
+					int NrParams = ParameterTypes.Length;
+					if ((Pass == 0 && NrParams != NrArgs) || (Pass == 1 && NrParams < NrArgs))
+						continue;
+
+					for (i = 0; i < NrArgs; i++)
+					{
+						if (!(ArgTypes[i] is null) && !ParameterTypes[i].IsAssignableFrom(ArgTypes[i]))
+							break;
+					}
+
+					if (i < NrArgs)
+						continue;
+
+					object[] InvocationArguments;
+					if (NrArgs < NrParams)
+					{
+						InvocationArguments = new object[NrParams];
+						Array.Copy(Arguments, InvocationArguments, NrArgs);
+
+						for (; i < NrParams; i++)
+							InvocationArguments[i] = Instantiate(ReturnNullIfFail, ParameterTypes[i]);
+					}
+					else
+						InvocationArguments = Arguments;
+
+					Result = Constructor.Invoker(InvocationArguments);
+					return true;
+				}
+			}
+
+			Result = null;
+			return false;
+		}
+
 		/// <summary>
 		/// Returns an instance of the type <typeparamref name="T"/>. If one needs to be created, it is.
 		/// If the constructor requires arguments, these are instantiated as necessary, if not provided
@@ -1562,7 +1854,7 @@ namespace Waher.Runtime.Inventory
 
 			if (TI.IsInterface || TI.IsAbstract || TI.IsGenericTypeDefinition)
 			{
-				if (DefaultImplementationAttribute.TryGetDefaultImplementation(Type, out Type DefaultImplementation))
+				if (TryGetDefaultImplementation(Type, out Type DefaultImplementation))
 				{
 					Type = DefaultImplementation;
 					TI = Type.GetTypeInfo();
@@ -1573,7 +1865,7 @@ namespace Waher.Runtime.Inventory
 					throw new ArgumentException("Interface " + Type.FullName + " lacks a default implementation.", nameof(Type));
 			}
 
-			SingletonAttribute Singleton = TI.GetCustomAttribute<SingletonAttribute>(true);
+			SingletonAttribute Singleton = HasSingletonAttribute(Type) ? new SingletonAttribute() : null;
 
 			if (Singleton is null)
 				return Create(ReturnNullIfFail, Type, Arguments);
@@ -1672,12 +1964,12 @@ namespace Waher.Runtime.Inventory
 			if (Arguments is null || Arguments.Length == 0)
 				return Result;
 
-			if (!(Type.GetCustomAttribute<SingletonAttribute>() is null))
+			if (HasSingletonAttribute(Type))
 				RegisterSingleton(Result);
 			else
 			{
 				Type Type2 = Result.GetType();
-				if (Type2 != Type && !(Type2.GetCustomAttribute<SingletonAttribute>() is null))
+				if (Type2 != Type && HasSingletonAttribute(Type2))
 					RegisterSingleton(Result);
 			}
 
@@ -1795,6 +2087,41 @@ namespace Waher.Runtime.Inventory
 			return DefaultImplementationAttribute.TryGetDefaultImplementation(Type, out DefaultImplementation);
 		}
 
+		internal static bool HasSingletonAttribute(Type Type)
+		{
+			if (TryGetGeneratedMetadata(Type, out GeneratedTypeMetadata Metadata) && Metadata.HasSingletonAttribute)
+				return true;
+
+			return !(Type.GetCustomAttribute<SingletonAttribute>(true) is null);
+		}
+
+		internal static string[] GetModuleDependencies(Type Type)
+		{
+			if (TryGetGeneratedMetadata(Type, out GeneratedTypeMetadata Metadata))
+				return Metadata.ModuleDependencies;
+
+			return null;
+		}
+
+		/// <summary>
+		/// Checks if a type has a parameterless constructor that can be used by the inventory system.
+		/// </summary>
+		/// <param name="Type">Type.</param>
+		/// <returns>If such a constructor exists.</returns>
+		public static bool HasDefaultConstructor(Type Type)
+		{
+			if (TryGetGeneratedMetadata(Type, out GeneratedTypeMetadata Metadata))
+			{
+				foreach (GeneratedConstructorMetadata Constructor in Metadata.Constructors)
+				{
+					if (Constructor.IsPublic && (Constructor.ParameterTypes?.Length ?? 0) == 0)
+						return true;
+				}
+			}
+
+			return !(GetDefaultConstructor(Type) is null);
+		}
+
 		/// <summary>
 		/// Checks if an interface has a default implementation registered.
 		/// </summary>
@@ -1857,6 +2184,126 @@ namespace Waher.Runtime.Inventory
 			}
 
 			return Result;
+		}
+
+		private static GeneratedTypeMetadata MergeMetadata(GeneratedTypeMetadata Existing, GeneratedTypeMetadata Incoming)
+		{
+			return new GeneratedTypeMetadata(
+				Incoming.Type,
+				Incoming.Namespace ?? Existing.Namespace,
+				Incoming.BaseType ?? Existing.BaseType,
+				MergeDistinctTypes(Existing.ImplementedInterfaces, Incoming.ImplementedInterfaces),
+				MergeDistinctStrings(Existing.TypeAliases, Incoming.TypeAliases),
+				MergeArrays(Existing.TypeAttributes, Incoming.TypeAttributes),
+				MergeMembers(Existing.Members, Incoming.Members),
+				MergeConstructors(Existing.Constructors, Incoming.Constructors),
+				MergeDistinctStrings(Existing.ModuleDependencies, Incoming.ModuleDependencies),
+				Existing.HasSingletonAttribute || Incoming.HasSingletonAttribute,
+				Incoming.DefaultImplementationType ?? Existing.DefaultImplementationType);
+		}
+
+		private static Type[] MergeDistinctTypes(Type[] Existing, Type[] Incoming)
+		{
+			SortedDictionary<string, Type> Result = new SortedDictionary<string, Type>();
+
+			foreach (Type Type in Existing ?? NoTypes)
+			{
+				if (!(Type?.FullName is null))
+					Result[Type.FullName] = Type;
+			}
+
+			foreach (Type Type in Incoming ?? NoTypes)
+			{
+				if (!(Type?.FullName is null))
+					Result[Type.FullName] = Type;
+			}
+
+			Type[] Types = new Type[Result.Count];
+			Result.Values.CopyTo(Types, 0);
+			return Types;
+		}
+
+		private static string[] MergeDistinctStrings(string[] Existing, string[] Incoming)
+		{
+			SortedDictionary<string, bool> Result = new SortedDictionary<string, bool>(StringComparer.Ordinal);
+
+			foreach (string Item in Existing ?? Array.Empty<string>())
+			{
+				if (!string.IsNullOrEmpty(Item))
+					Result[Item] = true;
+			}
+
+			foreach (string Item in Incoming ?? Array.Empty<string>())
+			{
+				if (!string.IsNullOrEmpty(Item))
+					Result[Item] = true;
+			}
+
+			string[] Strings = new string[Result.Count];
+			Result.Keys.CopyTo(Strings, 0);
+			return Strings;
+		}
+
+		private static object[] MergeArrays(object[] Existing, object[] Incoming)
+		{
+			int c1 = Existing?.Length ?? 0;
+			int c2 = Incoming?.Length ?? 0;
+			object[] Result = new object[c1 + c2];
+
+			if (c1 > 0)
+				Array.Copy(Existing, 0, Result, 0, c1);
+			if (c2 > 0)
+				Array.Copy(Incoming, 0, Result, c1, c2);
+
+			return Result;
+		}
+
+		private static GeneratedMemberMetadata[] MergeMembers(GeneratedMemberMetadata[] Existing, GeneratedMemberMetadata[] Incoming)
+		{
+			Dictionary<string, GeneratedMemberMetadata> Result = new Dictionary<string, GeneratedMemberMetadata>(StringComparer.Ordinal);
+
+			foreach (GeneratedMemberMetadata Item in Existing ?? Array.Empty<GeneratedMemberMetadata>())
+				Result[Item.Name] = Item;
+
+			foreach (GeneratedMemberMetadata Item in Incoming ?? Array.Empty<GeneratedMemberMetadata>())
+				Result[Item.Name] = Item;
+
+			GeneratedMemberMetadata[] Members = new GeneratedMemberMetadata[Result.Count];
+			Result.Values.CopyTo(Members, 0);
+			return Members;
+		}
+
+		private static GeneratedConstructorMetadata[] MergeConstructors(GeneratedConstructorMetadata[] Existing, GeneratedConstructorMetadata[] Incoming)
+		{
+			Dictionary<string, GeneratedConstructorMetadata> Result = new Dictionary<string, GeneratedConstructorMetadata>(StringComparer.Ordinal);
+
+			foreach (GeneratedConstructorMetadata Item in Existing ?? Array.Empty<GeneratedConstructorMetadata>())
+				Result[GetConstructorSignature(Item)] = Item;
+
+			foreach (GeneratedConstructorMetadata Item in Incoming ?? Array.Empty<GeneratedConstructorMetadata>())
+				Result[GetConstructorSignature(Item)] = Item;
+
+			GeneratedConstructorMetadata[] Constructors = new GeneratedConstructorMetadata[Result.Count];
+			Result.Values.CopyTo(Constructors, 0);
+			return Constructors;
+		}
+
+		private static string GetConstructorSignature(GeneratedConstructorMetadata Constructor)
+		{
+			StringBuilder sb = new StringBuilder();
+			sb.Append(Constructor.IsPublic ? "1" : "0");
+			sb.Append(':');
+
+			Type[] ParameterTypes = Constructor.ParameterTypes ?? NoTypes;
+			for (int i = 0; i < ParameterTypes.Length; i++)
+			{
+				if (i > 0)
+					sb.Append(',');
+
+				sb.Append(ParameterTypes[i]?.FullName ?? string.Empty);
+			}
+
+			return sb.ToString();
 		}
 
 		/// <summary>

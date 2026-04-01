@@ -19,8 +19,8 @@ namespace Waher.Runtime.Inventory
 		{
 			Type TypeX = x.GetType();
 			Type TypeY = y.GetType();
-			IEnumerable<ModuleDependencyAttribute> AttrsX = TypeX.GetCustomAttributes<ModuleDependencyAttribute>();
-			IEnumerable<ModuleDependencyAttribute> AttrsY = TypeY.GetCustomAttributes<ModuleDependencyAttribute>();
+			IEnumerable<ModuleDependencyAttribute> AttrsX = GetDependencies(TypeX);
+			IEnumerable<ModuleDependencyAttribute> AttrsY = GetDependencies(TypeY);
 			bool XHasDependencies = false;
 			bool YHasDependencies = false;
 			bool XDependsOnY = false;
@@ -61,6 +61,20 @@ namespace Waher.Runtime.Inventory
 				return i;
 			else
 				return TypeX.FullName.CompareTo(TypeY.FullName);
+		}
+
+		private static IEnumerable<ModuleDependencyAttribute> GetDependencies(Type Type)
+		{
+			string[] Dependencies = Types.GetModuleDependencies(Type);
+
+			if (!(Dependencies is null))
+			{
+				foreach (string Dependency in Dependencies)
+					yield return new ModuleDependencyAttribute(Dependency);
+			}
+
+			foreach (ModuleDependencyAttribute Attr in Type.GetCustomAttributes<ModuleDependencyAttribute>())
+				yield return Attr;
 		}
 	}
 }

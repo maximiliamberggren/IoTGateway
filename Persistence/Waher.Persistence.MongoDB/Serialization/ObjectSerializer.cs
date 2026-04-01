@@ -2222,7 +2222,7 @@ namespace Waher.Persistence.MongoDB.Serialization
 
 			A = AssemblyLoadContext.Default.LoadFromStream(Output, PdbOutput);
 			Type T = A.GetType(Type.Namespace + ".Bson.BsonSerializer" + TypeName + this.provider.Id);
-			this.customSerializer = (IObjectSerializer)Activator.CreateInstance(T, this.provider);
+			this.customSerializer = (IObjectSerializer)Types.Create(false, T, this.provider);
 
 			BsonSerializer.RegisterSerializer(Type, this);
 

@@ -47,18 +47,13 @@ namespace Waher.Persistence.Serialization
 			this.compiled = Compiled;
 #endif
 
-			ConstructorInfo DefaultConstructor;
 			IObjectSerializer S;
 
 			foreach (Type T in Types.GetTypesImplementingInterface(typeof(IObjectSerializer)))
 			{
 				try
 				{
-					DefaultConstructor = Types.GetDefaultConstructor(T);
-					if (DefaultConstructor is null)
-						continue;
-
-					S = DefaultConstructor.Invoke(Types.NoParameters) as IObjectSerializer;
+					S = Types.Create(true, T) as IObjectSerializer;
 					if (S is null)
 						continue;
 				}
@@ -176,7 +171,7 @@ namespace Waher.Persistence.Serialization
 							Type ElementType = Type.GetElementType();
 							Type T = Types.GetType(typeof(ByteArraySerializer).FullName.Replace("ByteArray", "Array"));
 							Type SerializerType = T.MakeGenericType(new Type[] { ElementType });
-							Result = (IObjectSerializer)Activator.CreateInstance(SerializerType, this.context);
+							Result = (IObjectSerializer)Types.Create(false, SerializerType, this.context);
 						}
 						else if (TI.IsGenericType)
 						{

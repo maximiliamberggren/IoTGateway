@@ -297,13 +297,12 @@ namespace Waher.Networking.XMPP.P2P
 									continue;
 							}
 
-							ConstructorInfo CI = Types.GetDefaultConstructor(T);
-							if (CI is null)
-								continue;
-
 							try
 							{
-								IE2eEndpoint Endpoint = (IE2eEndpoint)CI.Invoke(Types.NoParameters);
+								IE2eEndpoint Endpoint = Types.Create(true, T) as IE2eEndpoint;
+								if (Endpoint is null)
+									continue;
+
 								E2eTypes[Endpoint.Namespace + "#" + Endpoint.LocalName] = Endpoint;
 							}
 							catch (Exception ex)

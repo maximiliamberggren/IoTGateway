@@ -455,13 +455,12 @@ namespace Waher.Networking.Cluster
 
 			foreach (Type T in Types.GetTypesImplementingInterface(typeof(IProperty)))
 			{
-				ConstructorInfo DefaultConstructor = Types.GetDefaultConstructor(T);
-				if (DefaultConstructor is null)
-					continue;
-
 				try
 				{
-					IProperty Property = (IProperty)DefaultConstructor.Invoke(Types.NoParameters);
+					IProperty Property = Types.Create(true, T) as IProperty;
+					if (Property is null)
+						continue;
+
 					Type PT = Property.PropertyType;
 					if (PT is null)
 						continue;
@@ -752,7 +751,7 @@ namespace Waher.Networking.Cluster
 								if (T is null)
 									ex = new Exception(ExceptionMessage);
 								else
-									ex = (Exception)Activator.CreateInstance(T, ExceptionMessage);
+									ex = (Exception)Types.Create(true, T, ExceptionMessage);
 							}
 							catch (Exception)
 							{
