@@ -4,14 +4,14 @@ using Waher.Runtime.Inventory;
 
 namespace Waher.Runtime.Inventory.Test.Definitions
 {
-	[WaherInventoryInclude]
+	[InventoryDiscoverable]
 	internal class InternalGeneratedExample : ExampleBase
 	{
 		public override double Eval(double x) => x + 10;
 	}
 
-	[WaherAotModel]
-	[WaherInventoryInclude]
+	[GenerateRuntimeMetadata]
+	[InventoryDiscoverable]
 	internal class InternalGeneratedModel
 	{
 		public string Name { get; set; } = string.Empty;
@@ -24,27 +24,27 @@ namespace Waher.Runtime.Inventory.Test.Definitions
 		string Id { get; }
 	}
 
-	[WaherInventoryInclude]
+	[InventoryDiscoverable]
 	internal class InternalGeneratedDefaultService : IGeneratedDefaultService
 	{
 		public string Id => "generated-default";
 	}
 
-	[WaherInventoryInclude]
+	[InventoryDiscoverable]
 	[Singleton]
 	internal class InternalGeneratedSingleton
 	{
 		public Guid Id { get; } = Guid.NewGuid();
 	}
 
-	[WaherInventoryInclude]
+	[InventoryDiscoverable]
 	internal class RootGeneratedModule : IModule
 	{
 		public Task Start() => Task.CompletedTask;
 		public Task Stop() => Task.CompletedTask;
 	}
 
-	[WaherInventoryInclude]
+	[InventoryDiscoverable]
 	[ModuleDependency(typeof(RootGeneratedModule))]
 	internal class DependentGeneratedModule : IModule
 	{

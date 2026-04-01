@@ -2196,6 +2196,7 @@ namespace Waher.Runtime.Inventory
 				MergeDistinctStrings(Existing.TypeAliases, Incoming.TypeAliases),
 				MergeArrays(Existing.TypeAttributes, Incoming.TypeAttributes),
 				MergeMembers(Existing.Members, Incoming.Members),
+				MergeMethods(Existing.Methods, Incoming.Methods),
 				MergeConstructors(Existing.Constructors, Incoming.Constructors),
 				MergeDistinctStrings(Existing.ModuleDependencies, Incoming.ModuleDependencies),
 				Existing.HasSingletonAttribute || Incoming.HasSingletonAttribute,
@@ -2271,6 +2272,37 @@ namespace Waher.Runtime.Inventory
 			GeneratedMemberMetadata[] Members = new GeneratedMemberMetadata[Result.Count];
 			Result.Values.CopyTo(Members, 0);
 			return Members;
+		}
+
+		private static GeneratedMethodMetadata[] MergeMethods(GeneratedMethodMetadata[] Existing, GeneratedMethodMetadata[] Incoming)
+		{
+			SortedDictionary<string, GeneratedMethodMetadata> Result = new SortedDictionary<string, GeneratedMethodMetadata>(StringComparer.Ordinal);
+
+			foreach (GeneratedMethodMetadata Item in Existing ?? Array.Empty<GeneratedMethodMetadata>())
+				Result[GetMethodKey(Item)] = Item;
+
+			foreach (GeneratedMethodMetadata Item in Incoming ?? Array.Empty<GeneratedMethodMetadata>())
+				Result[GetMethodKey(Item)] = Item;
+
+			GeneratedMethodMetadata[] Methods = new GeneratedMethodMetadata[Result.Count];
+			Result.Values.CopyTo(Methods, 0);
+			return Methods;
+		}
+
+		private static string GetMethodKey(GeneratedMethodMetadata Method)
+		{
+			StringBuilder sb = new StringBuilder();
+
+			sb.Append(Method.Name);
+			sb.Append('|');
+
+			foreach (Type ParameterType in Method.ParameterTypes ?? NoTypes)
+			{
+				sb.Append(ParameterType?.FullName);
+				sb.Append(';');
+			}
+
+			return sb.ToString();
 		}
 
 		private static GeneratedConstructorMetadata[] MergeConstructors(GeneratedConstructorMetadata[] Existing, GeneratedConstructorMetadata[] Incoming)

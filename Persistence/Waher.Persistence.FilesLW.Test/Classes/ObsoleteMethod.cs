@@ -1,5 +1,6 @@
 ﻿using System.Collections.Generic;
 using Waher.Persistence.Attributes;
+using Waher.Runtime.Inventory;
 
 #if !LW
 namespace Waher.Persistence.Files.Test.Classes
@@ -8,6 +9,7 @@ using Waher.Persistence.Files;
 namespace Waher.Persistence.FilesLW.Test.Classes
 #endif
 {
+	[GenerateRuntimeMetadata]
 	[ObsoleteMethod("ObsoleteProperties")]
 	public class ObsoleteMethod : Simple
 	{

@@ -215,7 +215,10 @@ namespace Waher.Persistence.Serialization
 		private readonly ChunkedList<Member> membersOrdered = new ChunkedList<Member>();
 		private PropertyInfo archiveProperty = null;
 		private FieldInfo archiveField = null;
+		private GeneratedMemberGetter archiveGetter = null;
 		private MethodInfo obsoleteMethod = null;
+		private GeneratedMethodInvoker obsoleteMethodInvoker = null;
+		private bool obsoleteMethodReturnsTask = false;
 		private object tag = null;
 		private int archiveDays = 0;
 		private bool archive = false;
@@ -331,90 +334,108 @@ namespace Waher.Persistence.Serialization
 			else
 				this.isNullable = !this.typeInfo.IsValueType;
 
-			CollectionNameAttribute CollectionNameAttribute = this.typeInfo.GetCustomAttribute<CollectionNameAttribute>(true);
-			if (CollectionNameAttribute is null)
-				this.collectionName = null;
-			else
-				this.collectionName = CollectionNameAttribute.Name;
+			SerializerTypeDescriptor MetadataDescriptor = null;
 
-			NoBackupAttribute NoBackupAttribute = this.typeInfo.GetCustomAttribute<NoBackupAttribute>(true);
-			if (NoBackupAttribute is null)
+			if (SerializerTypeDescriptor.TryCreate(this.type, out MetadataDescriptor))
 			{
-				this.backupCollection = true;
-				this.noBackupReason = null;
+				this.collectionName = MetadataDescriptor.CollectionName;
+				this.backupCollection = MetadataDescriptor.BackupCollection;
+				this.noBackupReason = MetadataDescriptor.NoBackupReason;
+				this.typeNameSerialization = MetadataDescriptor.TypeNameSerialization;
+				this.archive = MetadataDescriptor.Archive;
+				this.archiveDynamic = MetadataDescriptor.ArchiveDynamic;
+				this.archiveDays = MetadataDescriptor.ArchiveDays;
+				this.archiveGetter = MetadataDescriptor.ArchiveGetter;
+				this.obsoleteMethodInvoker = MetadataDescriptor.ObsoleteMethodInvoker;
+				this.obsoleteMethodReturnsTask = MetadataDescriptor.ObsoleteMethodReturnType == typeof(Task);
 			}
 			else
 			{
-				this.backupCollection = false;
-				this.noBackupReason = NoBackupAttribute.Reason;
-			}
+				CollectionNameAttribute CollectionNameAttribute = this.typeInfo.GetCustomAttribute<CollectionNameAttribute>(true);
+				if (CollectionNameAttribute is null)
+					this.collectionName = null;
+				else
+					this.collectionName = CollectionNameAttribute.Name;
 
-			TypeNameAttribute TypeNameAttribute = this.typeInfo.GetCustomAttribute<TypeNameAttribute>(true);
-			if (TypeNameAttribute is null)
-				this.typeNameSerialization = TypeNameSerialization.FullName;
-			else
-				this.typeNameSerialization = TypeNameAttribute.TypeNameSerialization;
-
-			ObsoleteMethodAttribute ObsoleteMethodAttribute = this.typeInfo.GetCustomAttribute<ObsoleteMethodAttribute>(true);
-			if (!(ObsoleteMethodAttribute is null))
-			{
-				this.obsoleteMethod = this.type.GetRuntimeMethod(ObsoleteMethodAttribute.MethodName, obsoleteMethodTypes);
-				if (this.obsoleteMethod is null)
+				NoBackupAttribute NoBackupAttribute = this.typeInfo.GetCustomAttribute<NoBackupAttribute>(true);
+				if (NoBackupAttribute is null)
 				{
-					StringBuilder sb = new StringBuilder();
-
-					sb.Append("Obsolete method ");
-					sb.Append(ObsoleteMethodAttribute.MethodName);
-					sb.Append(" does not exist on ");
-					AppendType(this.type, sb);
-
-					throw new SerializationException(sb.ToString(), this.type);
-				}
-
-				ParameterInfo[] Parameters = this.obsoleteMethod.GetParameters();
-				if (Parameters.Length != 1 || Parameters[0].ParameterType != typeof(Dictionary<string, object>))
-				{
-					StringBuilder sb = new StringBuilder();
-
-					sb.Append("Obsolete method ");
-					sb.Append(ObsoleteMethodAttribute.MethodName);
-					sb.Append(" on ");
-					AppendType(this.type, sb);
-					sb.Append(" has invalid arguments.");
-
-					throw new SerializationException(sb.ToString(), this.type);
-				}
-			}
-
-			ArchivingTimeAttribute ArchivingTimeAttribute = this.typeInfo.GetCustomAttribute<ArchivingTimeAttribute>(true);
-			if (ArchivingTimeAttribute is null)
-				this.archive = false;
-			else
-			{
-				this.archive = true;
-				if (!string.IsNullOrEmpty(ArchivingTimeAttribute.PropertyName))
-				{
-					this.archiveProperty = this.type.GetRuntimeProperty(ArchivingTimeAttribute.PropertyName);
-
-					if (this.archiveProperty is null)
-					{
-						this.archiveField = this.type.GetRuntimeField(ArchivingTimeAttribute.PropertyName);
-						this.archiveProperty = null;
-
-						if (this.archiveField is null)
-							throw new SerializationException("Archiving time property or field not found: " + ArchivingTimeAttribute.PropertyName, this.type);
-						else if (this.archiveField.FieldType != typeof(int))
-							throw new SerializationException("Invalid field type for the archiving time: " + this.archiveField.Name, this.type);
-					}
-					else if (this.archiveProperty.PropertyType != typeof(int))
-						throw new SerializationException("Invalid property type for the archiving time: " + this.archiveProperty.Name, this.type);
-					else
-						this.archiveField = null;
-
-					this.archiveDynamic = !(this.archiveProperty is null && this.archiveField is null);
+					this.backupCollection = true;
+					this.noBackupReason = null;
 				}
 				else
-					this.archiveDays = ArchivingTimeAttribute.Days;
+				{
+					this.backupCollection = false;
+					this.noBackupReason = NoBackupAttribute.Reason;
+				}
+
+				TypeNameAttribute TypeNameAttribute = this.typeInfo.GetCustomAttribute<TypeNameAttribute>(true);
+				if (TypeNameAttribute is null)
+					this.typeNameSerialization = TypeNameSerialization.FullName;
+				else
+					this.typeNameSerialization = TypeNameAttribute.TypeNameSerialization;
+
+				ObsoleteMethodAttribute ObsoleteMethodAttribute = this.typeInfo.GetCustomAttribute<ObsoleteMethodAttribute>(true);
+				if (!(ObsoleteMethodAttribute is null))
+				{
+					this.obsoleteMethod = this.type.GetRuntimeMethod(ObsoleteMethodAttribute.MethodName, obsoleteMethodTypes);
+					if (this.obsoleteMethod is null)
+					{
+						StringBuilder sb = new StringBuilder();
+
+						sb.Append("Obsolete method ");
+						sb.Append(ObsoleteMethodAttribute.MethodName);
+						sb.Append(" does not exist on ");
+						AppendType(this.type, sb);
+
+						throw new SerializationException(sb.ToString(), this.type);
+					}
+
+					ParameterInfo[] Parameters = this.obsoleteMethod.GetParameters();
+					if (Parameters.Length != 1 || Parameters[0].ParameterType != typeof(Dictionary<string, object>))
+					{
+						StringBuilder sb = new StringBuilder();
+
+						sb.Append("Obsolete method ");
+						sb.Append(ObsoleteMethodAttribute.MethodName);
+						sb.Append(" on ");
+						AppendType(this.type, sb);
+						sb.Append(" has invalid arguments.");
+
+						throw new SerializationException(sb.ToString(), this.type);
+					}
+				}
+
+				ArchivingTimeAttribute ArchivingTimeAttribute = this.typeInfo.GetCustomAttribute<ArchivingTimeAttribute>(true);
+				if (ArchivingTimeAttribute is null)
+					this.archive = false;
+				else
+				{
+					this.archive = true;
+					if (!string.IsNullOrEmpty(ArchivingTimeAttribute.PropertyName))
+					{
+						this.archiveProperty = this.type.GetRuntimeProperty(ArchivingTimeAttribute.PropertyName);
+
+						if (this.archiveProperty is null)
+						{
+							this.archiveField = this.type.GetRuntimeField(ArchivingTimeAttribute.PropertyName);
+							this.archiveProperty = null;
+
+							if (this.archiveField is null)
+								throw new SerializationException("Archiving time property or field not found: " + ArchivingTimeAttribute.PropertyName, this.type);
+							else if (this.archiveField.FieldType != typeof(int))
+								throw new SerializationException("Invalid field type for the archiving time: " + this.archiveField.Name, this.type);
+						}
+						else if (this.archiveProperty.PropertyType != typeof(int))
+							throw new SerializationException("Invalid property type for the archiving time: " + this.archiveProperty.Name, this.type);
+						else
+							this.archiveField = null;
+
+						this.archiveDynamic = !(this.archiveProperty is null && this.archiveField is null);
+					}
+					else
+						this.archiveDays = ArchivingTimeAttribute.Days;
+				}
 			}
 
 			if (this.typeInfo.IsAbstract && this.typeNameSerialization == TypeNameSerialization.None)
@@ -423,18 +444,31 @@ namespace Waher.Persistence.Serialization
 			ChunkedList<string[]> Indices = new ChunkedList<string[]>();
 			Dictionary<string, bool> IndexFields = new Dictionary<string, bool>();
 
-			foreach (IndexAttribute IndexAttribute in this.typeInfo.GetCustomAttributes<IndexAttribute>(true))
+			if (!(MetadataDescriptor is null))
 			{
-				Indices.Add(IndexAttribute.FieldNames);
+				foreach (string[] Index in MetadataDescriptor.Indices)
+				{
+					Indices.Add(Index);
 
-				foreach (string FieldName in IndexAttribute.FieldNames)
-					IndexFields[FieldName] = true;
+					foreach (string FieldName in Index)
+						IndexFields[FieldName] = true;
+				}
+			}
+			else
+			{
+				foreach (IndexAttribute IndexAttribute in this.typeInfo.GetCustomAttributes<IndexAttribute>(true))
+				{
+					Indices.Add(IndexAttribute.FieldNames);
+
+					foreach (string FieldName in IndexAttribute.FieldNames)
+						IndexFields[FieldName] = true;
+				}
 			}
 
 			this.indices = Indices.ToArray();
 
 #if COMPILED
-			if (this.compiled)
+			if (this.compiled && SupportsRuntimeCompilation())
 			{
 				StringBuilder CSharp = new StringBuilder();
 				StringBuilder sb = new StringBuilder();
@@ -3679,6 +3713,7 @@ namespace Waher.Persistence.Serialization
 			}
 			else
 			{
+				this.compiled = false;
 #endif
 				Member Member;
 				MethodInfo MI;
@@ -3690,105 +3725,173 @@ namespace Waher.Persistence.Serialization
 				bool Encrypted;
 				bool IsObjectId;
 
-				foreach (MemberInfo MemberInfo in GetMembers(this.typeInfo))
+				if (!(MetadataDescriptor is null))
 				{
-
-					Ignore = false;
-					Encrypted = false;
-					IsObjectId = false;
-					DecryptedMinLength = 0;
-					ShortName = null;
-
-					foreach (object Attr in MemberInfo.GetCustomAttributes(true))
+					foreach (SerializerMemberDescriptor Descriptor in MetadataDescriptor.Members)
 					{
-						if (Attr is IgnoreMemberAttribute)
-						{
-							Ignore = true;
-							break;
-						}
-						else if (Attr is EncryptedAttribute EncryptedAttribute)
-						{
-							Encrypted = true;
+						Ignore = Descriptor.Ignore;
+						Encrypted = Descriptor.Encrypted;
+						IsObjectId = false;
+						DecryptedMinLength = Descriptor.DecryptedMinLength;
+						ShortName = Descriptor.ShortName;
+
+						if (Encrypted)
 							this.hasEncrypted = true;
-							DecryptedMinLength = EncryptedAttribute.MinLength;
-						}
-					}
 
-					if (Ignore)
-						continue;
-
-					if (MemberInfo is FieldInfo FI)
-					{
-						if (!FI.IsPublic || FI.IsStatic)
-							continue;
-
-						Member = new FieldMember(FI, this.normalized ? await this.context.GetFieldCode(this.collectionName, FI.Name) : 0, Encrypted, DecryptedMinLength);
-					}
-					else if (MemberInfo is PropertyInfo PI)
-					{
-						if ((MI = PI.GetMethod) is null || !MI.IsPublic || MI.IsStatic)
-							continue;
-
-						if ((MI = PI.SetMethod) is null || !MI.IsPublic || MI.IsStatic)
-							continue;
-
-						if (PI.GetIndexParameters().Length > 0)
-							continue;
-
-						Member = new PropertyMember(PI, this.normalized ? await this.context.GetFieldCode(this.collectionName, PI.Name) : 0, Encrypted, DecryptedMinLength);
-					}
-					else
-						continue;
-
-					ShortName = null;
-					IsObjectId = false;
-
-					foreach (object Attr in MemberInfo.GetCustomAttributes(true))
-					{
-						if (Attr is DefaultValueAttribute DefaultValueAttribute)
+						if (Ignore || !Descriptor.IsPublic || !Descriptor.CanRead || !Descriptor.CanWrite ||
+							Descriptor.Getter is null || Descriptor.Setter is null)
 						{
-							if (!IndexFields.ContainsKey(MemberInfo.Name))
-							{
-								DefaultValue = DefaultValueAttribute.Value;
-								NrDefault++;
-
-								if (DefaultValue is string s && Member.MemberType == typeof(CaseInsensitiveString))
-									DefaultValue = (CaseInsensitiveString)s;
-
-								if (!(DefaultValue is null) && DefaultValue.GetType() != Member.MemberType)
-									DefaultValue = Convert.ChangeType(DefaultValue, Member.MemberType);
-
-								Member.DefaultValue = DefaultValue;
-							}
+							continue;
 						}
-						else if (Attr is ByReferenceAttribute)
+
+						Member = new GeneratedMember(Descriptor.Name,
+							this.normalized ? await this.context.GetFieldCode(this.collectionName, Descriptor.Name) : 0,
+							Descriptor.MemberType, Encrypted, DecryptedMinLength, Descriptor.Getter, Descriptor.Setter);
+
+						if (Descriptor.HasDefaultValue && !IndexFields.ContainsKey(Descriptor.Name))
+						{
+							DefaultValue = Descriptor.DefaultValue;
+							NrDefault++;
+
+							if (DefaultValue is string s && Member.MemberType == typeof(CaseInsensitiveString))
+								DefaultValue = (CaseInsensitiveString)s;
+
+							if (!(DefaultValue is null) && DefaultValue.GetType() != Member.MemberType)
+								DefaultValue = Convert.ChangeType(DefaultValue, Member.MemberType);
+
+							Member.DefaultValue = DefaultValue;
+						}
+
+						if (Descriptor.ByReference)
 						{
 							Member.ByReference = true;
 							this.hasByRef = true;
 						}
-						else if (Attr is ObjectIdAttribute)
+
+						if (Descriptor.ObjectId)
 						{
 							this.objectIdMember = Member;
 							IsObjectId = true;
 						}
-						else if (Attr is ShortNameAttribute ShortNameAttribute)
-							ShortName = ShortNameAttribute.Name;
+
+						if (IsObjectId && Encrypted)
+							throw new SerializationException("Object ID cannot be encrypted.", this.type);
+
+						if (IsObjectId)
+							continue;
+
+						this.membersByName[Member.Name] = Member;
+						this.membersOrdered.Add(Member);
+
+						if (this.normalized)
+							this.membersByFieldCode[Member.FieldCode] = Member;
+
+						if (!string.IsNullOrEmpty(ShortName))
+							this.membersByName[ShortName] = Member;
 					}
+				}
+				else
+				{
+					foreach (MemberInfo MemberInfo in GetMembers(this.typeInfo))
+					{
 
-					if (IsObjectId && Encrypted)
-						throw new SerializationException("Object ID cannot be encrypted.", this.type);
+						Ignore = false;
+						Encrypted = false;
+						IsObjectId = false;
+						DecryptedMinLength = 0;
+						ShortName = null;
 
-					if (Ignore || IsObjectId)
-						continue;
+						foreach (object Attr in MemberInfo.GetCustomAttributes(true))
+						{
+							if (Attr is IgnoreMemberAttribute)
+							{
+								Ignore = true;
+								break;
+							}
+							else if (Attr is EncryptedAttribute EncryptedAttribute)
+							{
+								Encrypted = true;
+								this.hasEncrypted = true;
+								DecryptedMinLength = EncryptedAttribute.MinLength;
+							}
+						}
 
-					this.membersByName[Member.Name] = Member;
-					this.membersOrdered.Add(Member);
+						if (Ignore)
+							continue;
 
-					if (this.normalized)
-						this.membersByFieldCode[Member.FieldCode] = Member;
+						if (MemberInfo is FieldInfo FI)
+						{
+							if (!FI.IsPublic || FI.IsStatic)
+								continue;
 
-					if (!string.IsNullOrEmpty(ShortName))
-						this.membersByName[ShortName] = Member;
+							Member = new FieldMember(FI, this.normalized ? await this.context.GetFieldCode(this.collectionName, FI.Name) : 0, Encrypted, DecryptedMinLength);
+						}
+						else if (MemberInfo is PropertyInfo PI)
+						{
+							if ((MI = PI.GetMethod) is null || !MI.IsPublic || MI.IsStatic)
+								continue;
+
+							if ((MI = PI.SetMethod) is null || !MI.IsPublic || MI.IsStatic)
+								continue;
+
+							if (PI.GetIndexParameters().Length > 0)
+								continue;
+
+							Member = new PropertyMember(PI, this.normalized ? await this.context.GetFieldCode(this.collectionName, PI.Name) : 0, Encrypted, DecryptedMinLength);
+						}
+						else
+							continue;
+
+						ShortName = null;
+						IsObjectId = false;
+
+						foreach (object Attr in MemberInfo.GetCustomAttributes(true))
+						{
+							if (Attr is DefaultValueAttribute DefaultValueAttribute)
+							{
+								if (!IndexFields.ContainsKey(MemberInfo.Name))
+								{
+									DefaultValue = DefaultValueAttribute.Value;
+									NrDefault++;
+
+									if (DefaultValue is string s && Member.MemberType == typeof(CaseInsensitiveString))
+										DefaultValue = (CaseInsensitiveString)s;
+
+									if (!(DefaultValue is null) && DefaultValue.GetType() != Member.MemberType)
+										DefaultValue = Convert.ChangeType(DefaultValue, Member.MemberType);
+
+									Member.DefaultValue = DefaultValue;
+								}
+							}
+							else if (Attr is ByReferenceAttribute)
+							{
+								Member.ByReference = true;
+								this.hasByRef = true;
+							}
+							else if (Attr is ObjectIdAttribute)
+							{
+								this.objectIdMember = Member;
+								IsObjectId = true;
+							}
+							else if (Attr is ShortNameAttribute ShortNameAttribute)
+								ShortName = ShortNameAttribute.Name;
+						}
+
+						if (IsObjectId && Encrypted)
+							throw new SerializationException("Object ID cannot be encrypted.", this.type);
+
+						if (Ignore || IsObjectId)
+							continue;
+
+						this.membersByName[Member.Name] = Member;
+						this.membersOrdered.Add(Member);
+
+						if (this.normalized)
+							this.membersByFieldCode[Member.FieldCode] = Member;
+
+						if (!string.IsNullOrEmpty(ShortName))
+							this.membersByName[ShortName] = Member;
+					}
 				}
 #if COMPILED
 			}
@@ -3816,6 +3919,24 @@ namespace Waher.Persistence.Serialization
 		}
 
 #if COMPILED
+		private static bool SupportsRuntimeCompilation()
+		{
+			Type RuntimeFeature = Type.GetType("System.Runtime.CompilerServices.RuntimeFeature");
+			if (RuntimeFeature is null)
+				return true;
+
+			PropertyInfo IsDynamicCodeSupported = RuntimeFeature.GetRuntimeProperty("IsDynamicCodeSupported");
+			PropertyInfo IsDynamicCodeCompiled = RuntimeFeature.GetRuntimeProperty("IsDynamicCodeCompiled");
+
+			if ((IsDynamicCodeSupported?.GetValue(null) as bool?) == false)
+				return false;
+
+			if ((IsDynamicCodeCompiled?.GetValue(null) as bool?) == false)
+				return false;
+
+			return true;
+		}
+
 		private static string GetLocation(Type T)
 		{
 			System.Reflection.TypeInfo TI = T.GetTypeInfo();
@@ -3915,6 +4036,9 @@ namespace Waher.Persistence.Serialization
 		{
 			if (!this.archive)
 				return 0;
+
+			if (!(this.archiveGetter is null))
+				return (int)this.archiveGetter(Object);
 
 			if (!(this.archiveProperty is null))
 				return (int)this.archiveProperty.GetValue(Object);
@@ -4689,11 +4813,20 @@ namespace Waher.Persistence.Serialization
 					}
 				}
 
-				if (!(this.obsoleteMethod is null) && (!(Obsolete is null)))
+				if (!(Obsolete is null))
 				{
-					object Result2 = this.obsoleteMethod.Invoke(Result, new object[] { Obsolete });
-					if (Result2 is Task T)
-						await T;
+					if (!(this.obsoleteMethodInvoker is null))
+					{
+						object Result2 = this.obsoleteMethodInvoker(Result, new object[] { Obsolete });
+						if (this.obsoleteMethodReturnsTask && Result2 is Task T)
+							await T;
+					}
+					else if (!(this.obsoleteMethod is null))
+					{
+						object Result2 = this.obsoleteMethod.Invoke(Result, new object[] { Obsolete });
+						if (Result2 is Task T)
+							await T;
+					}
 				}
 
 				return Result;

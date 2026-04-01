@@ -6,7 +6,7 @@ namespace Waher.Runtime.Inventory
 	/// Opts a non-public type into generated inventory registration.
 	/// </summary>
 	[AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Interface | AttributeTargets.Enum, AllowMultiple = false, Inherited = false)]
-	public sealed class WaherInventoryIncludeAttribute : Attribute
+	public sealed class InventoryDiscoverableAttribute : Attribute
 	{
 	}
 }

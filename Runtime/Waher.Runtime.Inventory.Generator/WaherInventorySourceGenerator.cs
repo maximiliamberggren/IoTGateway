@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Globalization;
 using System.Linq;
 using System.Text;
@@ -22,7 +23,7 @@ namespace Waher.Runtime.Inventory.Generator
 		private static readonly DiagnosticDescriptor HiddenImplementationRule = new DiagnosticDescriptor(
 			"WaherAOT002",
 			"Non-public implementation is not auto-registered",
-			"Type '{0}' is non-public and will not be auto-registered unless it is marked with [WaherInventoryInclude].",
+			"Type '{0}' is non-public and will not be auto-registered unless it is marked with [InventoryDiscoverable].",
 			"Waher.AOT",
 			DiagnosticSeverity.Info,
 			true);
@@ -38,8 +39,20 @@ namespace Waher.Runtime.Inventory.Generator
 			if (metadataSymbol is null)
 				return;
 
-			INamedTypeSymbol includeAttributeSymbol = compilation.GetTypeByMetadataName("Waher.Runtime.Inventory.WaherInventoryIncludeAttribute");
-			INamedTypeSymbol aotModelAttributeSymbol = compilation.GetTypeByMetadataName("Waher.Runtime.Inventory.WaherAotModelAttribute");
+			INamedTypeSymbol includeAttributeSymbol = compilation.GetTypeByMetadataName("Waher.Runtime.Inventory.InventoryDiscoverableAttribute");
+			INamedTypeSymbol aotModelAttributeSymbol = compilation.GetTypeByMetadataName("Waher.Runtime.Inventory.GenerateRuntimeMetadataAttribute");
+			INamedTypeSymbol collectionNameAttributeSymbol = compilation.GetTypeByMetadataName("Waher.Persistence.Attributes.CollectionNameAttribute");
+			INamedTypeSymbol noBackupAttributeSymbol = compilation.GetTypeByMetadataName("Waher.Persistence.Attributes.NoBackupAttribute");
+			INamedTypeSymbol typeNameAttributeSymbol = compilation.GetTypeByMetadataName("Waher.Persistence.Attributes.TypeNameAttribute");
+			INamedTypeSymbol archivingTimeAttributeSymbol = compilation.GetTypeByMetadataName("Waher.Persistence.Attributes.ArchivingTimeAttribute");
+			INamedTypeSymbol obsoleteMethodAttributeSymbol = compilation.GetTypeByMetadataName("Waher.Persistence.Attributes.ObsoleteMethodAttribute");
+			INamedTypeSymbol indexAttributeSymbol = compilation.GetTypeByMetadataName("Waher.Persistence.Attributes.IndexAttribute");
+			INamedTypeSymbol ignoreMemberAttributeSymbol = compilation.GetTypeByMetadataName("Waher.Persistence.Attributes.IgnoreMemberAttribute");
+			INamedTypeSymbol defaultValueAttributeSymbol = compilation.GetTypeByMetadataName("Waher.Persistence.Attributes.DefaultValueAttribute");
+			INamedTypeSymbol byReferenceAttributeSymbol = compilation.GetTypeByMetadataName("Waher.Persistence.Attributes.ByReferenceAttribute");
+			INamedTypeSymbol objectIdAttributeSymbol = compilation.GetTypeByMetadataName("Waher.Persistence.Attributes.ObjectIdAttribute");
+			INamedTypeSymbol shortNameAttributeSymbol = compilation.GetTypeByMetadataName("Waher.Persistence.Attributes.ShortNameAttribute");
+			INamedTypeSymbol encryptedAttributeSymbol = compilation.GetTypeByMetadataName("Waher.Persistence.Attributes.EncryptedAttribute");
 			INamedTypeSymbol typeAliasAttributeSymbol = compilation.GetTypeByMetadataName("Waher.Runtime.Inventory.TypeAliasAttribute");
 			INamedTypeSymbol moduleDependencyAttributeSymbol = compilation.GetTypeByMetadataName("Waher.Runtime.Inventory.ModuleDependencyAttribute");
 			INamedTypeSymbol singletonAttributeSymbol = compilation.GetTypeByMetadataName("Waher.Runtime.Inventory.SingletonAttribute");
@@ -73,7 +86,11 @@ namespace Waher.Runtime.Inventory.Generator
 				}
 
 				registrations.Add(CreateRegistration(type, aotModelAttributeSymbol, typeAliasAttributeSymbol,
-					moduleDependencyAttributeSymbol, singletonAttributeSymbol, defaultImplementationAttributeSymbol));
+					moduleDependencyAttributeSymbol, singletonAttributeSymbol, defaultImplementationAttributeSymbol,
+					includeAttributeSymbol, collectionNameAttributeSymbol, noBackupAttributeSymbol, typeNameAttributeSymbol,
+					archivingTimeAttributeSymbol, obsoleteMethodAttributeSymbol, indexAttributeSymbol,
+					ignoreMemberAttributeSymbol, defaultValueAttributeSymbol, byReferenceAttributeSymbol,
+					objectIdAttributeSymbol, shortNameAttributeSymbol, encryptedAttributeSymbol));
 			}
 
 			if (registrations.Count == 0)
@@ -106,6 +123,7 @@ namespace Waher.Runtime.Inventory.Generator
 
 			int constructorIndex = 0;
 			int memberIndex = 0;
+			int methodIndex = 0;
 			foreach (TypeRegistration registration in registrations)
 			{
 				sb.AppendLine("			Types.RegisterGeneratedMetadata(new GeneratedTypeMetadata(");
@@ -124,9 +142,14 @@ namespace Waher.Runtime.Inventory.Generator
 				sb.Append("				TypeAliases: ");
 				sb.Append(BuildStringArray(registration.TypeAliases));
 				sb.AppendLine(",");
-				sb.AppendLine("				TypeAttributes: null,");
+				sb.Append("				TypeAttributes: ");
+				sb.Append(BuildAttributes(registration.TypeAttributes));
+				sb.AppendLine(",");
 				sb.Append("				Members: ");
 				sb.Append(BuildMembers(registration.Members, ref memberIndex));
+				sb.AppendLine(",");
+				sb.Append("				Methods: ");
+				sb.Append(BuildMethods(registration.Methods, ref methodIndex));
 				sb.AppendLine(",");
 				sb.Append("				Constructors: ");
 				sb.Append(BuildConstructors(registration.Constructors, ref constructorIndex));
@@ -170,6 +193,64 @@ namespace Waher.Runtime.Inventory.Generator
 						sb.Append("]");
 					}
 					sb.AppendLine(");");
+					sb.AppendLine("		}");
+					sb.AppendLine();
+				}
+			}
+
+			methodIndex = 0;
+			foreach (TypeRegistration registration in registrations)
+			{
+				foreach (MethodRegistration method in registration.Methods)
+				{
+					sb.Append("		private static object InvokeMethod");
+					sb.Append(methodIndex++);
+					sb.AppendLine("(object instance, object[] args)");
+					sb.AppendLine("		{");
+					sb.Append("			");
+
+					if (method.ReturnsVoid)
+					{
+						sb.Append("((");
+						sb.Append(registration.TypeExpression);
+						sb.Append(")instance).");
+						sb.Append(method.Name);
+						sb.Append("(");
+						for (int i = 0; i < method.ParameterTypes.Count; i++)
+						{
+							if (i > 0)
+								sb.Append(", ");
+
+							sb.Append("(");
+							sb.Append(method.ParameterTypes[i]);
+							sb.Append(")args[");
+							sb.Append(i.ToString(CultureInfo.InvariantCulture));
+							sb.Append("]");
+						}
+						sb.AppendLine(");");
+						sb.AppendLine("			return null;");
+					}
+					else
+					{
+						sb.Append("return ((");
+						sb.Append(registration.TypeExpression);
+						sb.Append(")instance).");
+						sb.Append(method.Name);
+						sb.Append("(");
+						for (int i = 0; i < method.ParameterTypes.Count; i++)
+						{
+							if (i > 0)
+								sb.Append(", ");
+
+							sb.Append("(");
+							sb.Append(method.ParameterTypes[i]);
+							sb.Append(")args[");
+							sb.Append(i.ToString(CultureInfo.InvariantCulture));
+							sb.Append("]");
+						}
+						sb.AppendLine(");");
+					}
+
 					sb.AppendLine("		}");
 					sb.AppendLine();
 				}
@@ -273,9 +354,21 @@ namespace Waher.Runtime.Inventory.Generator
 
 		private static TypeRegistration CreateRegistration(INamedTypeSymbol type, INamedTypeSymbol aotModelAttributeSymbol,
 			INamedTypeSymbol typeAliasAttributeSymbol, INamedTypeSymbol moduleDependencyAttributeSymbol,
-			INamedTypeSymbol singletonAttributeSymbol, INamedTypeSymbol defaultImplementationAttributeSymbol)
+			INamedTypeSymbol singletonAttributeSymbol, INamedTypeSymbol defaultImplementationAttributeSymbol,
+			INamedTypeSymbol includeAttributeSymbol, INamedTypeSymbol collectionNameAttributeSymbol,
+			INamedTypeSymbol noBackupAttributeSymbol, INamedTypeSymbol typeNameAttributeSymbol,
+			INamedTypeSymbol archivingTimeAttributeSymbol, INamedTypeSymbol obsoleteMethodAttributeSymbol,
+			INamedTypeSymbol indexAttributeSymbol, INamedTypeSymbol ignoreMemberAttributeSymbol,
+			INamedTypeSymbol defaultValueAttributeSymbol, INamedTypeSymbol byReferenceAttributeSymbol,
+			INamedTypeSymbol objectIdAttributeSymbol, INamedTypeSymbol shortNameAttributeSymbol,
+			INamedTypeSymbol encryptedAttributeSymbol)
 		{
 			List<MemberRegistration> members = new List<MemberRegistration>();
+			List<MethodRegistration> methods = new List<MethodRegistration>();
+			List<string> typeAttributes = GetSupportedAttributeExpressions(type.GetAttributes(),
+				aotModelAttributeSymbol, includeAttributeSymbol, collectionNameAttributeSymbol, noBackupAttributeSymbol,
+				typeNameAttributeSymbol, archivingTimeAttributeSymbol, obsoleteMethodAttributeSymbol, indexAttributeSymbol);
+
 			if (HasAttribute(type, aotModelAttributeSymbol))
 			{
 				foreach (ISymbol member in type.GetMembers())
@@ -290,7 +383,10 @@ namespace Waher.Runtime.Inventory.Generator
 								continue;
 
 							members.Add(new MemberRegistration(field.Name, GetTypeExpression(field.Type), true, !field.IsReadOnly,
-								field.DeclaredAccessibility == Accessibility.Public, true));
+								field.DeclaredAccessibility == Accessibility.Public, true,
+								GetSupportedAttributeExpressions(field.GetAttributes(), ignoreMemberAttributeSymbol,
+								defaultValueAttributeSymbol, byReferenceAttributeSymbol, objectIdAttributeSymbol,
+								shortNameAttributeSymbol, encryptedAttributeSymbol)));
 							break;
 
 						case IPropertySymbol property:
@@ -305,8 +401,45 @@ namespace Waher.Runtime.Inventory.Generator
 							if (!canRead && !canWrite)
 								continue;
 
-							members.Add(new MemberRegistration(property.Name, GetTypeExpression(property.Type), canRead, canWrite, isPublic, false));
+							members.Add(new MemberRegistration(property.Name, GetTypeExpression(property.Type), canRead, canWrite,
+								isPublic, false, GetSupportedAttributeExpressions(property.GetAttributes(),
+								ignoreMemberAttributeSymbol, defaultValueAttributeSymbol, byReferenceAttributeSymbol,
+								objectIdAttributeSymbol, shortNameAttributeSymbol, encryptedAttributeSymbol)));
 							break;
+					}
+				}
+
+				AttributeData obsoleteMethodAttribute = type.GetAttributes().FirstOrDefault(attr =>
+					SymbolEqualityComparer.Default.Equals(attr.AttributeClass, obsoleteMethodAttributeSymbol));
+				if (!(obsoleteMethodAttribute is null) &&
+					obsoleteMethodAttribute.ConstructorArguments.Length == 1 &&
+					obsoleteMethodAttribute.ConstructorArguments[0].Value is string methodName &&
+					!string.IsNullOrEmpty(methodName))
+				{
+					foreach (IMethodSymbol method in type.GetMembers(methodName).OfType<IMethodSymbol>())
+					{
+						if (method.MethodKind != MethodKind.Ordinary || method.IsStatic || !CanAccess(method.DeclaredAccessibility))
+							continue;
+						if (method.Parameters.Length != 1)
+							continue;
+						if (method.Parameters.Any(x => x.RefKind != RefKind.None))
+							continue;
+						if (method.Parameters[0].Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) !=
+							"global::System.Collections.Generic.Dictionary<string, object>")
+						{
+							continue;
+						}
+
+						bool returnsVoid = method.ReturnsVoid;
+						bool returnsTask = method.ReturnType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) ==
+							"global::System.Threading.Tasks.Task";
+						if (!returnsVoid && !returnsTask)
+							continue;
+
+						methods.Add(new MethodRegistration(method.Name, method.DeclaredAccessibility == Accessibility.Public,
+							method.Parameters.Select(x => GetTypeExpression(x.Type)).ToList(),
+							returnsVoid ? "System.Void" : GetTypeExpression(method.ReturnType), returnsVoid));
+						break;
 					}
 				}
 			}
@@ -319,6 +452,8 @@ namespace Waher.Runtime.Inventory.Generator
 					if (ctor.IsImplicitlyDeclared)
 						continue;
 					if (!CanAccess(ctor.DeclaredAccessibility))
+						continue;
+					if (ctor.Parameters.Any(x => x.RefKind != RefKind.None))
 						continue;
 
 					constructors.Add(new ConstructorRegistration(
@@ -364,7 +499,190 @@ namespace Waher.Runtime.Inventory.Generator
 				HasAttribute(type, singletonAttributeSymbol),
 				defaultImplementationExpression,
 				constructors,
-				members);
+				members,
+				methods,
+				typeAttributes);
+		}
+
+		private static List<string> GetSupportedAttributeExpressions(ImmutableArray<AttributeData> Attributes,
+			params INamedTypeSymbol[] SupportedSymbols)
+		{
+			List<string> Result = new List<string>();
+
+			foreach (AttributeData Attribute in Attributes)
+			{
+				if (!IsSupportedAttribute(Attribute, SupportedSymbols))
+					continue;
+
+				string Expression = BuildAttributeExpression(Attribute);
+				if (!string.IsNullOrEmpty(Expression))
+					Result.Add(Expression);
+			}
+
+			return Result;
+		}
+
+		private static bool IsSupportedAttribute(AttributeData Attribute, INamedTypeSymbol[] SupportedSymbols)
+		{
+			if (Attribute?.AttributeClass is null)
+				return false;
+
+			foreach (INamedTypeSymbol SupportedSymbol in SupportedSymbols)
+			{
+				if (!(SupportedSymbol is null) &&
+					SymbolEqualityComparer.Default.Equals(Attribute.AttributeClass, SupportedSymbol))
+				{
+					return true;
+				}
+			}
+
+			return false;
+		}
+
+		private static string BuildAttributeExpression(AttributeData Attribute)
+		{
+			if (Attribute.AttributeClass is null)
+				return null;
+
+			List<string> Arguments = new List<string>();
+
+			foreach (TypedConstant Argument in Attribute.ConstructorArguments)
+			{
+				string Expression = BuildTypedConstantExpression(Argument);
+				if (Expression is null)
+					return null;
+
+				Arguments.Add(Expression);
+			}
+
+			return "new " + Attribute.AttributeClass.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) +
+				"(" + string.Join(", ", Arguments) + ")";
+		}
+
+		private static string BuildTypedConstantExpression(TypedConstant Constant)
+		{
+			if (Constant.IsNull)
+				return "null";
+
+			switch (Constant.Kind)
+			{
+				case TypedConstantKind.Array:
+					List<string> Items = new List<string>();
+
+					foreach (TypedConstant Item in Constant.Values)
+					{
+						string ItemExpression = BuildTypedConstantExpression(Item);
+						if (ItemExpression is null)
+							return null;
+
+						Items.Add(ItemExpression);
+					}
+
+					return "new " + GetTypeExpression(Constant.Type) + " { " + string.Join(", ", Items) + " }";
+
+				case TypedConstantKind.Type:
+					if (Constant.Value is ITypeSymbol TypeValue)
+						return "typeof(" + GetTypeExpression(TypeValue) + ")";
+					break;
+
+				case TypedConstantKind.Enum:
+					if (!(Constant.Type is null))
+					{
+						return "(" + GetTypeExpression(Constant.Type) + ")" +
+							Convert.ToString(Constant.Value, CultureInfo.InvariantCulture);
+					}
+					break;
+
+				case TypedConstantKind.Primitive:
+					return BuildPrimitiveExpression(Constant.Type, Constant.Value);
+			}
+
+			return null;
+		}
+
+		private static string BuildPrimitiveExpression(ITypeSymbol Type, object Value)
+		{
+			if (Value is null)
+				return "null";
+
+			switch (Value)
+			{
+				case string s:
+					return ToLiteral(s);
+
+				case char ch:
+					return BuildCharLiteral(ch);
+
+				case bool b:
+					return b ? "true" : "false";
+
+				case float f:
+					return f.ToString(CultureInfo.InvariantCulture) + "F";
+
+				case double d:
+					return d.ToString("R", CultureInfo.InvariantCulture);
+
+				case decimal dec:
+					return dec.ToString(CultureInfo.InvariantCulture) + "M";
+
+				case long l:
+					return l.ToString(CultureInfo.InvariantCulture) + "L";
+
+				case ulong ul:
+					return ul.ToString(CultureInfo.InvariantCulture) + "UL";
+
+				case uint ui:
+					return ui.ToString(CultureInfo.InvariantCulture) + "U";
+
+				case int i:
+					return i.ToString(CultureInfo.InvariantCulture);
+
+				case short sh:
+					return "(short)" + sh.ToString(CultureInfo.InvariantCulture);
+
+				case ushort ush:
+					return "(ushort)" + ush.ToString(CultureInfo.InvariantCulture);
+
+				case byte by:
+					return "(byte)" + by.ToString(CultureInfo.InvariantCulture);
+
+				case sbyte sby:
+					return "(sbyte)" + sby.ToString(CultureInfo.InvariantCulture);
+			}
+
+			if (!(Type is null))
+				return "(" + GetTypeExpression(Type) + ")" + Convert.ToString(Value, CultureInfo.InvariantCulture);
+
+			return Convert.ToString(Value, CultureInfo.InvariantCulture);
+		}
+
+		private static string BuildCharLiteral(char ch)
+		{
+			switch (ch)
+			{
+				case '\'':
+					return "'\\''";
+				case '\\':
+					return "'\\\\'";
+				case '\0':
+					return "'\\0'";
+				case '\a':
+					return "'\\a'";
+				case '\b':
+					return "'\\b'";
+				case '\f':
+					return "'\\f'";
+				case '\n':
+					return "'\\n'";
+				case '\r':
+					return "'\\r'";
+				case '\t':
+					return "'\\t'";
+				case '\v':
+					return "'\\v'";
+				default:
+					return "'" + ch + "'";
+			}
 		}
 
 		private static List<string> GetAliases(INamedTypeSymbol type, INamedTypeSymbol typeAliasAttributeSymbol)
@@ -485,11 +803,41 @@ namespace Waher.Runtime.Inventory.Generator
 					(member.IsPublic ? "true" : "false") + ", " +
 					(member.IsField ? "true" : "false") + ", " +
 					getter + ", " +
-					setter + ")");
+					setter + ", " +
+					BuildAttributes(member.Attributes) + ")");
 				memberIndex++;
 			}
 
 			return "new GeneratedMemberMetadata[] { " + string.Join(", ", items) + " }";
+		}
+
+		private static string BuildMethods(List<MethodRegistration> methods, ref int methodIndex)
+		{
+			if (methods.Count == 0)
+				return "System.Array.Empty<GeneratedMethodMetadata>()";
+
+			List<string> items = new List<string>();
+			foreach (MethodRegistration method in methods)
+			{
+				string invokerName = "InvokeMethod" + methodIndex.ToString(CultureInfo.InvariantCulture);
+				items.Add("new GeneratedMethodMetadata(" +
+					ToLiteral(method.Name) + ", " +
+					BuildTypeArray(method.ParameterTypes) + ", " +
+					ToTypeValue(method.ReturnTypeExpression) + ", " +
+					(method.IsPublic ? "true" : "false") + ", " +
+					invokerName + ")");
+				methodIndex++;
+			}
+
+			return "new GeneratedMethodMetadata[] { " + string.Join(", ", items) + " }";
+		}
+
+		private static string BuildAttributes(List<string> values)
+		{
+			if (values.Count == 0)
+				return "System.Array.Empty<object>()";
+
+			return "new object[] { " + string.Join(", ", values) + " }";
 		}
 
 		private static string ToLiteral(string value)
@@ -502,7 +850,8 @@ namespace Waher.Runtime.Inventory.Generator
 
 		private static string ToTypeValue(string typeExpression)
 		{
-			return string.IsNullOrEmpty(typeExpression) ? "null" : "typeof(" + typeExpression + ")";
+			return string.IsNullOrEmpty(typeExpression) ? "null" :
+				typeExpression == "System.Void" ? "typeof(void)" : "typeof(" + typeExpression + ")";
 		}
 
 		private static string GetRuntimeTypeName(ITypeSymbol type)
@@ -535,7 +884,8 @@ namespace Waher.Runtime.Inventory.Generator
 		{
 			public TypeRegistration(string TypeExpression, string Namespace, string BaseTypeExpression, List<string> ImplementedInterfaces,
 				List<string> TypeAliases, List<string> ModuleDependencies, bool HasSingleton, string DefaultImplementationExpression,
-				List<ConstructorRegistration> Constructors, List<MemberRegistration> Members)
+				List<ConstructorRegistration> Constructors, List<MemberRegistration> Members, List<MethodRegistration> Methods,
+				List<string> TypeAttributes)
 			{
 				this.TypeExpression = TypeExpression;
 				this.Namespace = Namespace;
@@ -547,6 +897,8 @@ namespace Waher.Runtime.Inventory.Generator
 				this.DefaultImplementationExpression = DefaultImplementationExpression;
 				this.Constructors = Constructors;
 				this.Members = Members;
+				this.Methods = Methods;
+				this.TypeAttributes = TypeAttributes;
 			}
 
 			public string TypeExpression { get; }
@@ -559,6 +911,8 @@ namespace Waher.Runtime.Inventory.Generator
 			public string DefaultImplementationExpression { get; }
 			public List<ConstructorRegistration> Constructors { get; }
 			public List<MemberRegistration> Members { get; }
+			public List<MethodRegistration> Methods { get; }
+			public List<string> TypeAttributes { get; }
 		}
 
 		private sealed class ConstructorRegistration
@@ -575,7 +929,8 @@ namespace Waher.Runtime.Inventory.Generator
 
 		private sealed class MemberRegistration
 		{
-			public MemberRegistration(string Name, string MemberTypeExpression, bool CanRead, bool CanWrite, bool IsPublic, bool IsField)
+			public MemberRegistration(string Name, string MemberTypeExpression, bool CanRead, bool CanWrite, bool IsPublic,
+				bool IsField, List<string> Attributes)
 			{
 				this.Name = Name;
 				this.MemberTypeExpression = MemberTypeExpression;
@@ -583,6 +938,7 @@ namespace Waher.Runtime.Inventory.Generator
 				this.CanWrite = CanWrite;
 				this.IsPublic = IsPublic;
 				this.IsField = IsField;
+				this.Attributes = Attributes;
 			}
 
 			public string Name { get; }
@@ -591,6 +947,26 @@ namespace Waher.Runtime.Inventory.Generator
 			public bool CanWrite { get; }
 			public bool IsPublic { get; }
 			public bool IsField { get; }
+			public List<string> Attributes { get; }
+		}
+
+		private sealed class MethodRegistration
+		{
+			public MethodRegistration(string Name, bool IsPublic, List<string> ParameterTypes, string ReturnTypeExpression,
+				bool ReturnsVoid)
+			{
+				this.Name = Name;
+				this.IsPublic = IsPublic;
+				this.ParameterTypes = ParameterTypes;
+				this.ReturnTypeExpression = ReturnTypeExpression;
+				this.ReturnsVoid = ReturnsVoid;
+			}
+
+			public string Name { get; }
+			public bool IsPublic { get; }
+			public List<string> ParameterTypes { get; }
+			public string ReturnTypeExpression { get; }
+			public bool ReturnsVoid { get; }
 		}
 	}
 }

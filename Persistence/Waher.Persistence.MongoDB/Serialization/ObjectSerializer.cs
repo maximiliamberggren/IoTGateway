@@ -38,6 +38,10 @@ namespace Waher.Persistence.MongoDB.Serialization
 		private readonly TypeNameSerialization typeNameSerialization;
 		private readonly FieldInfo objectIdFieldInfo = null;
 		private readonly PropertyInfo objectIdPropertyInfo = null;
+		private readonly GeneratedMemberGetter objectIdGetter = null;
+		private readonly GeneratedMemberSetter objectIdSetter = null;
+		private readonly Type objectIdMemberType = null;
+		private readonly string objectIdMemberName = null;
 		private readonly bool isNullable;
 		private readonly Type type;
 		private readonly System.Reflection.TypeInfo typeInfo;
@@ -45,6 +49,7 @@ namespace Waher.Persistence.MongoDB.Serialization
 		private readonly string noBackupReason = null;
 		private readonly PropertyInfo archiveProperty = null;
 		private readonly FieldInfo archiveField = null;
+		private readonly GeneratedMemberGetter archiveGetter = null;
 		private readonly int archiveDays = 0;
 		private bool archive = false;
 		private bool archiveDynamic = false;
@@ -76,6 +81,51 @@ namespace Waher.Persistence.MongoDB.Serialization
 			this.type = Type;
 			this.typeInfo = Type.GetTypeInfo();
 			this.provider = Provider;
+			this.isNullable = CalcIsNullable(Type, this.typeInfo);
+
+			if (SerializerTypeDescriptor.TryCreate(Type, out SerializerTypeDescriptor Descriptor))
+			{
+				this.collectionName = Descriptor.CollectionName;
+				this.backupCollection = Descriptor.BackupCollection;
+				this.noBackupReason = Descriptor.NoBackupReason;
+				this.typeFieldName = Descriptor.TypeFieldName;
+				this.typeNameSerialization = Descriptor.TypeNameSerialization;
+				this.archive = Descriptor.Archive;
+				this.archiveDynamic = Descriptor.ArchiveDynamic;
+				this.archiveDays = Descriptor.ArchiveDays;
+				this.archiveGetter = Descriptor.ArchiveGetter;
+
+				foreach (SerializerMemberDescriptor Member in Descriptor.Members)
+				{
+					this.memberTypes[Member.Name] = Member.MemberType;
+
+					if (Member.HasDefaultValue)
+						this.defaultValues[Member.Name] = Member.DefaultValue;
+
+					if (!string.IsNullOrEmpty(Member.ShortName))
+						this.shortNamesByFieldName[Member.Name] = Member.ShortName;
+				}
+
+				foreach (SerializerMemberDescriptor Member in Descriptor.Members)
+				{
+					if (!Member.ObjectId)
+						continue;
+
+					this.objectIdGetter = Member.Getter;
+					this.objectIdSetter = Member.Setter;
+					this.objectIdMemberType = Member.MemberType;
+					this.objectIdMemberName = Member.Name;
+					break;
+				}
+
+				if (this.typeInfo.IsAbstract && this.typeNameSerialization == TypeNameSerialization.None)
+					throw new Exception("Serializers for abstract classes require type names to be serialized.");
+
+				this.customSerializer = new MetadataObjectSerializer(this.provider, this.type, Descriptor, this.isNullable);
+				RegisterSerializer(Type);
+				this.EnsureIndices(Descriptor.Indices);
+				return;
+			}
 
 			CollectionNameAttribute CollectionNameAttribute = this.typeInfo.GetCustomAttribute<CollectionNameAttribute>(true);
 			if (CollectionNameAttribute is null)
@@ -152,28 +202,6 @@ namespace Waher.Persistence.MongoDB.Serialization
 
 			if (this.typeInfo.IsAbstract && this.typeNameSerialization == TypeNameSerialization.None)
 				throw new Exception("Serializers for abstract classes require type names to be serialized.");
-
-			if (this.type == typeof(bool) ||
-				this.type == typeof(byte) ||
-				this.type == typeof(char) ||
-				this.type == typeof(DateTime) ||
-				this.type == typeof(decimal) ||
-				this.type == typeof(double) ||
-				this.type == typeof(short) ||
-				this.type == typeof(int) ||
-				this.type == typeof(long) ||
-				this.type == typeof(sbyte) ||
-				this.type == typeof(float) ||
-				this.type == typeof(ushort) ||
-				this.type == typeof(uint) ||
-				this.type == typeof(ulong))
-			{
-				this.isNullable = false;
-			}
-			else if (this.type == typeof(void) || this.type == typeof(string))
-				this.isNullable = true;
-			else
-				this.isNullable = !this.typeInfo.IsValueType;
 
 			StringBuilder CSharp = new StringBuilder();
 			Type MemberType;
@@ -2223,27 +2251,8 @@ namespace Waher.Persistence.MongoDB.Serialization
 			A = AssemblyLoadContext.Default.LoadFromStream(Output, PdbOutput);
 			Type T = A.GetType(Type.Namespace + ".Bson.BsonSerializer" + TypeName + this.provider.Id);
 			this.customSerializer = (IObjectSerializer)Types.Create(false, T, this.provider);
-
-			BsonSerializer.RegisterSerializer(Type, this);
-
-			IMongoCollection<BsonDocument> Collection = null;
-			List<BsonDocument> Indices = null;
-
-			foreach (IndexAttribute CompoundIndexAttribute in this.typeInfo.GetCustomAttributes<IndexAttribute>(true))
-			{
-				if (Collection is null)
-				{
-					if (string.IsNullOrEmpty(this.collectionName))
-						Collection = this.provider.DefaultCollection;
-					else
-						Collection = this.provider.GetCollection(this.collectionName);
-
-					IAsyncCursor<BsonDocument> Cursor = Collection.Indexes.List();
-					Indices = Cursor.ToList<BsonDocument>();
-				}
-
-				Task T2 = CheckIndexExists(Collection, Indices, CompoundIndexAttribute.FieldNames, this);
-			}
+			RegisterSerializer(Type);
+			this.EnsureIndices(this.GetIndexDefinitions());
 		}
 
 		internal static async Task CheckIndexExists(IMongoCollection<BsonDocument> Collection, List<BsonDocument> Indices,
@@ -2526,6 +2535,8 @@ namespace Waher.Persistence.MongoDB.Serialization
 					return this.objectIdFieldInfo.Name;
 				else if (!(this.objectIdPropertyInfo is null))
 					return this.objectIdPropertyInfo.Name;
+				else if (!(this.objectIdMemberName is null))
+					return this.objectIdMemberName;
 				else
 					return null;
 			}
@@ -2538,7 +2549,8 @@ namespace Waher.Persistence.MongoDB.Serialization
 		{
 			get
 			{
-				return !(this.objectIdFieldInfo is null) || !(this.objectIdPropertyInfo is null);
+				return !(this.objectIdFieldInfo is null) || !(this.objectIdPropertyInfo is null) ||
+					!(this.objectIdGetter is null && this.objectIdSetter is null);
 			}
 		}
 
@@ -2559,6 +2571,8 @@ namespace Waher.Persistence.MongoDB.Serialization
 				OID = this.objectIdFieldInfo.GetValue(Value);
 			else if (!(this.objectIdPropertyInfo is null))
 				OID = this.objectIdPropertyInfo.GetValue(Value);
+			else if (!(this.objectIdGetter is null))
+				OID = this.objectIdGetter(Value);
 			else
 				return false;
 
@@ -2584,11 +2598,23 @@ namespace Waher.Persistence.MongoDB.Serialization
 		public virtual async Task<ObjectId> GetObjectId(object Value, bool InsertIfNotFound)
 		{
 			object Obj;
+			Type MemberType;
 
 			if (!(this.objectIdFieldInfo is null))
+			{
 				Obj = this.objectIdFieldInfo.GetValue(Value);
+				MemberType = this.objectIdFieldInfo.FieldType;
+			}
 			else if (!(this.objectIdPropertyInfo is null))
+			{
 				Obj = this.objectIdPropertyInfo.GetValue(Value);
+				MemberType = this.objectIdPropertyInfo.PropertyType;
+			}
+			else if (!(this.objectIdGetter is null))
+			{
+				Obj = this.objectIdGetter(Value);
+				MemberType = this.objectIdMemberType;
+			}
 			else
 				throw new NotSupportedException("No Object ID member found in objects of type " + Value.GetType().FullName + ".");
 
@@ -2611,12 +2637,6 @@ namespace Waher.Persistence.MongoDB.Serialization
 					Collection = this.provider.GetCollection(CollectionName);
 
 				ObjectId ObjectId = ObjectId.GenerateNewId();
-				Type MemberType;
-
-				if (!(this.objectIdFieldInfo is null))
-					MemberType = this.objectIdFieldInfo.FieldType;
-				else
-					MemberType = this.objectIdPropertyInfo.PropertyType;
 
 				if (MemberType == typeof(ObjectId))
 					Obj = ObjectId;
@@ -2631,8 +2651,10 @@ namespace Waher.Persistence.MongoDB.Serialization
 
 				if (!(this.objectIdFieldInfo is null))
 					this.objectIdFieldInfo.SetValue(Value, Obj);
-				else
+				else if (!(this.objectIdPropertyInfo is null))
 					this.objectIdPropertyInfo.SetValue(Value, Obj);
+				else if (!(this.objectIdSetter is null))
+					this.objectIdSetter(Value, Obj);
 
 				BsonDocument Doc = Value.ToBsonDocument(ValueType, Serializer);
 				await Collection.InsertOneAsync(Doc);
@@ -2698,6 +2720,9 @@ namespace Waher.Persistence.MongoDB.Serialization
 
 			if (!(this.archiveField is null))
 				return (int)this.archiveField.GetValue(Object);
+
+			if (!(this.archiveGetter is null))
+				return (int)this.archiveGetter(Object);
 
 			return this.archiveDays;
 		}
@@ -2765,6 +2790,67 @@ namespace Waher.Persistence.MongoDB.Serialization
 			}
 			else
 				return this.customSerializer.TryGetFieldType(FieldName, Object, out FieldType);
+		}
+
+		private static bool CalcIsNullable(Type Type, System.Reflection.TypeInfo TypeInfo)
+		{
+			if (Type == typeof(bool) ||
+				Type == typeof(byte) ||
+				Type == typeof(char) ||
+				Type == typeof(DateTime) ||
+				Type == typeof(decimal) ||
+				Type == typeof(double) ||
+				Type == typeof(short) ||
+				Type == typeof(int) ||
+				Type == typeof(long) ||
+				Type == typeof(sbyte) ||
+				Type == typeof(float) ||
+				Type == typeof(ushort) ||
+				Type == typeof(uint) ||
+				Type == typeof(ulong))
+			{
+				return false;
+			}
+			else if (Type == typeof(void) || Type == typeof(string))
+				return true;
+			else
+				return !TypeInfo.IsValueType;
+		}
+
+		private void RegisterSerializer(Type Type)
+		{
+			BsonSerializer.RegisterSerializer(Type, this);
+		}
+
+		private string[][] GetIndexDefinitions()
+		{
+			List<string[]> Result = new List<string[]>();
+
+			foreach (IndexAttribute CompoundIndexAttribute in this.typeInfo.GetCustomAttributes<IndexAttribute>(true))
+				Result.Add(CompoundIndexAttribute.FieldNames);
+
+			return Result.Count == 0 ? Array.Empty<string[]>() : Result.ToArray();
+		}
+
+		private void EnsureIndices(string[][] IndexDefinitions)
+		{
+			if (IndexDefinitions is null || IndexDefinitions.Length == 0)
+				return;
+
+			IMongoCollection<BsonDocument> Collection;
+
+			if (string.IsNullOrEmpty(this.collectionName))
+				Collection = this.provider.DefaultCollection;
+			else
+				Collection = this.provider.GetCollection(this.collectionName);
+
+			IAsyncCursor<BsonDocument> Cursor = Collection.Indexes.List();
+			List<BsonDocument> Indices = Cursor.ToList<BsonDocument>();
+
+			foreach (string[] FieldNames in IndexDefinitions)
+			{
+				Task _ = CheckIndexExists(Collection, Indices, FieldNames, this);
+			}
 		}
 
 		private static string GenericParameterName(Type Type)

@@ -1308,6 +1308,75 @@ namespace Waher.Persistence.MongoDB
 			return First;
 		}
 
+		internal Task<object> TryLoadObject(Type Type, object ObjectId)
+		{
+			ObjectId OID;
+
+			if (ObjectId is ObjectId ObjId)
+				OID = ObjId;
+			else if (ObjectId is string s)
+				OID = new ObjectId(s);
+			else if (ObjectId is byte[] A)
+				OID = new ObjectId(A);
+			else if (ObjectId is Guid Guid)
+				OID = GeneratedObjectSerializerBase.GuidToObjectId(Guid);
+			else
+				throw new NotSupportedException("Unsupported type for Object ID: " + ObjectId.GetType().FullName);
+
+			return this.TryLoadObject(Type, OID);
+		}
+
+		internal async Task<object> TryLoadObject(Type Type, ObjectId ObjectId)
+		{
+			string Key = Type.FullName + " " + ObjectId;
+
+			if (this.loadCache.TryGetValue(Key, out object Obj) && !(Obj is null) &&
+				Type.GetTypeInfo().IsAssignableFrom(Obj.GetType().GetTypeInfo()))
+			{
+				return Obj;
+			}
+
+			ObjectSerializer Serializer = this.GetObjectSerializerEx(Type);
+			string CollectionName = Serializer.CollectionName(null);
+			IMongoCollection<BsonDocument> Collection;
+
+			if (string.IsNullOrEmpty(CollectionName))
+				Collection = this.defaultCollection;
+			else
+				Collection = this.GetCollection(CollectionName);
+
+			FilterDefinition<BsonDocument> Filter = this.Convert(new FilterFieldEqualTo(Serializer.ObjectIdMemberName, ObjectId), Serializer);
+			IAsyncCursor<BsonDocument> Cursor = await Collection.Find(Filter).Limit(2).ToCursorAsync();
+			BsonDeserializationArgs Args = new BsonDeserializationArgs()
+			{
+				NominalType = Type
+			};
+			object First = null;
+
+			while (await Cursor.MoveNextAsync())
+			{
+				foreach (BsonDocument Document in Cursor.Current)
+				{
+					BsonDocumentReader Reader = new BsonDocumentReader(Document);
+					BsonDeserializationContext Context = BsonDeserializationContext.CreateRoot(Reader);
+					object Item = Serializer.Deserialize(Context, Args);
+
+					if (Item is null)
+						continue;
+
+					if (First is null)
+						First = Item;
+					else
+						throw new Exception("Multiple objects of type " + Type.FullName + " found with object ID " + ObjectId);
+				}
+			}
+
+			if (!(First is null))
+				this.loadCache.Add(Key, First);
+
+			return First;
+		}
+
 		private readonly Cache<string, object> loadCache = new Cache<string, object>(10000, new TimeSpan(0, 0, 10), new TimeSpan(0, 0, 5), true);  // TODO: Make parameters configurable.
 
 		/// <summary>
