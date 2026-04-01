@@ -14,6 +14,7 @@ namespace Waher.Runtime.Inventory
 	public static class Types
 	{
 		private static readonly SortedDictionary<string, Type> types = new SortedDictionary<string, Type>();
+		private static readonly SortedDictionary<string, Type> registeredTypes = new SortedDictionary<string, Type>();
 		private static readonly SortedDictionary<string, SortedDictionary<string, Type>> typesPerInterface = new SortedDictionary<string, SortedDictionary<string, Type>>();
 		private static readonly SortedDictionary<string, SortedDictionary<string, Type>> typesPerNamespace = new SortedDictionary<string, SortedDictionary<string, Type>>();
 		private static readonly SortedDictionary<string, SortedDictionary<string, bool>> namespacesPerNamespace = new SortedDictionary<string, SortedDictionary<string, bool>>();
@@ -32,6 +33,74 @@ namespace Waher.Runtime.Inventory
 		static Types()
 		{
 			Log.Terminating += OnProcessExit;
+		}
+
+		/// <summary>
+		/// Registers a type explicitly in the inventory system.
+		/// This is useful in trimmed/AOT scenarios where pure reflection-based discovery can be incomplete.
+		/// </summary>
+		/// <typeparam name="T">Type to register.</typeparam>
+		public static void RegisterType<T>()
+		{
+			RegisterType(typeof(T));
+		}
+
+		/// <summary>
+		/// Registers types explicitly in the inventory system.
+		/// This is useful in trimmed/AOT scenarios where pure reflection-based discovery can be incomplete.
+		/// </summary>
+		/// <param name="Types">Types to register.</param>
+		public static void RegisterTypes(params Type[] Types)
+		{
+			if (Types is null)
+				throw new ArgumentNullException(nameof(Types));
+
+			foreach (Type T in Types)
+				RegisterType(T);
+		}
+
+		/// <summary>
+		/// Registers a type explicitly in the inventory system.
+		/// This is useful in trimmed/AOT scenarios where pure reflection-based discovery can be incomplete.
+		/// </summary>
+		/// <param name="Type">Type to register.</param>
+		public static void RegisterType(Type Type)
+		{
+			if (Type is null)
+				throw new ArgumentNullException(nameof(Type));
+
+			string TypeName = Type.FullName;
+			if (string.IsNullOrEmpty(TypeName))
+				throw new ArgumentException("Only named runtime types can be registered.", nameof(Type));
+
+			lock (synchObject)
+			{
+				registeredTypes[TypeName] = Type;
+				if (assemblies is null)
+					assemblies = new Assembly[] { Type.Assembly };
+				else
+					CheckIncluded(ref assemblies, Type.Assembly);
+
+				if (isInitialized)
+				{
+					SortedDictionary<string, Type> LastTypes = null;
+					string LastNamespace = string.Empty;
+					Dictionary<string, Type> TypeNameAliases = null;
+
+					IndexType(Type, ref LastTypes, ref LastNamespace, ref TypeNameAliases);
+
+					if (!(TypeNameAliases is null))
+					{
+						foreach (KeyValuePair<string, Type> P in TypeNameAliases)
+						{
+							if (types.TryGetValue(P.Key, out Type T))
+								Log.Error("Type alias conflicts with registered type.", P.Key, T.FullName);
+							else
+								types[P.Key] = P.Value;
+						}
+					}
+				}
+			}
 		}
 
 		/// <summary>
@@ -668,10 +737,6 @@ namespace Waher.Runtime.Inventory
 			Dictionary<string, Assembly> NamespaceAliases = null;
 			IEnumerable<Type> AssemblyTypes;
 			Assembly A;
-			string InterfaceName;
-			string TypeName;
-			string Namespace;
-			string ParentNamespace;
 			string LastNamespace = string.Empty;
 			int i;
 
@@ -742,102 +807,11 @@ namespace Waher.Runtime.Inventory
 					}
 
 					foreach (Type Type in AssemblyTypes)
-					{
-						TypeName = Type.FullName;
-						i = TypeName.LastIndexOf('`');
-						if (i > 0 && int.TryParse(TypeName.Substring(i + 1), out int j))
-							TypeName = TypeName.Substring(0, i);
-
-						types[TypeName] = Type;
-
-						i = TypeName.LastIndexOf('.');
-						if (i >= 0)
-							RegisterQualifiedName(TypeName.Substring(i + 1), TypeName);
-
-						try
-						{
-							TypeInfo TI = Type.GetTypeInfo();
-
-							foreach (Type Interface in TI.ImplementedInterfaces)
-							{
-								InterfaceName = Interface.FullName;
-								if (InterfaceName is null)
-									continue;   // Generic interface.
-
-								if (!typesPerInterface.TryGetValue(InterfaceName, out Types))
-								{
-									Types = new SortedDictionary<string, Type>();
-									typesPerInterface[InterfaceName] = Types;
-								}
-
-								Types[TypeName] = Type;
-							}
-
-							foreach (TypeAliasAttribute Alias in TI.GetCustomAttributes<TypeAliasAttribute>(false))
-							{
-								if (TypeNameAliases is null)
-									TypeNameAliases = new Dictionary<string, Type>();
-
-								if (TypeNameAliases.ContainsKey(Alias.TypeName))
-									Log.Error("Type alias already registered.", Alias.TypeName, Type.FullName);
-								else
-									TypeNameAliases[Alias.TypeName] = Type;
-							}
-						}
-						catch (Exception)
-						{
-							// Implemented interfaces might not be accessible.
-						}
-
-						Namespace = Type.Namespace;
-						if (!(Namespace is null))
-						{
-							if (Namespace == LastNamespace)
-								Types = LastTypes;
-							else
-							{
-								if (!typesPerNamespace.TryGetValue(Namespace, out Types))
-								{
-									Types = new SortedDictionary<string, Type>();
-									typesPerNamespace[Namespace] = Types;
-
-									i = Namespace.LastIndexOf('.');
-									while (i >= 0)
-									{
-										RegisterQualifiedName(Namespace.Substring(i + 1), Namespace);
-										ParentNamespace = Namespace.Substring(0, i);
-
-										if (!namespacesPerNamespace.TryGetValue(ParentNamespace, out SortedDictionary<string, bool> Namespaces))
-										{
-											Namespaces = new SortedDictionary<string, bool>();
-											namespacesPerNamespace[ParentNamespace] = Namespaces;
-										}
-										else
-										{
-											if (Namespaces.ContainsKey(Namespace))
-												break;
-										}
-
-										Namespaces[Namespace] = true;
-										Namespace = ParentNamespace;
-										i = Namespace.LastIndexOf('.');
-									}
-
-									if (i < 0)
-									{
-										rootNamespaces[Namespace] = true;
-										RegisterQualifiedName(Namespace, Namespace);
-									}
-								}
-
-								LastNamespace = Namespace;
-								LastTypes = Types;
-							}
-
-							Types[TypeName] = Type;
-						}
-					}
+						IndexType(Type, ref LastTypes, ref LastNamespace, ref TypeNameAliases);
 				}
+
+				foreach (Type Type in registeredTypes.Values)
+					IndexType(Type, ref LastTypes, ref LastNamespace, ref TypeNameAliases);
 
 				if (!(TypeNameAliases is null))
 				{
@@ -893,6 +867,113 @@ namespace Waher.Runtime.Inventory
 
 				isInitialized = true;
 			}
+		}
+
+		private static void IndexType(Type Type, ref SortedDictionary<string, Type> LastTypes,
+			ref string LastNamespace, ref Dictionary<string, Type> TypeNameAliases)
+		{
+			SortedDictionary<string, Type> Types;
+			string TypeName = Type.FullName;
+			string Namespace;
+			string ParentNamespace;
+			string InterfaceName;
+			int i;
+
+			if (string.IsNullOrEmpty(TypeName))
+				return;
+
+			i = TypeName.LastIndexOf('`');
+			if (i > 0 && int.TryParse(TypeName.Substring(i + 1), out int j))
+				TypeName = TypeName.Substring(0, i);
+
+			types[TypeName] = Type;
+
+			i = TypeName.LastIndexOf('.');
+			if (i >= 0)
+				RegisterQualifiedName(TypeName.Substring(i + 1), TypeName);
+
+			try
+			{
+				TypeInfo TI = Type.GetTypeInfo();
+
+				foreach (Type Interface in TI.ImplementedInterfaces)
+				{
+					InterfaceName = Interface.FullName;
+					if (InterfaceName is null)
+						continue;
+
+					if (!typesPerInterface.TryGetValue(InterfaceName, out Types))
+					{
+						Types = new SortedDictionary<string, Type>();
+						typesPerInterface[InterfaceName] = Types;
+					}
+
+					Types[TypeName] = Type;
+				}
+
+				foreach (TypeAliasAttribute Alias in TI.GetCustomAttributes<TypeAliasAttribute>(false))
+				{
+					if (TypeNameAliases is null)
+						TypeNameAliases = new Dictionary<string, Type>();
+
+					if (TypeNameAliases.ContainsKey(Alias.TypeName))
+						Log.Error("Type alias already registered.", Alias.TypeName, Type.FullName);
+					else
+						TypeNameAliases[Alias.TypeName] = Type;
+				}
+			}
+			catch (Exception)
+			{
+				// Implemented interfaces might not be accessible.
+			}
+
+			Namespace = Type.Namespace;
+			if (Namespace is null)
+				return;
+
+			if (Namespace == LastNamespace)
+				Types = LastTypes;
+			else
+			{
+				if (!typesPerNamespace.TryGetValue(Namespace, out Types))
+				{
+					Types = new SortedDictionary<string, Type>();
+					typesPerNamespace[Namespace] = Types;
+
+					i = Namespace.LastIndexOf('.');
+					while (i >= 0)
+					{
+						RegisterQualifiedName(Namespace.Substring(i + 1), Namespace);
+						ParentNamespace = Namespace.Substring(0, i);
+
+						if (!namespacesPerNamespace.TryGetValue(ParentNamespace, out SortedDictionary<string, bool> Namespaces))
+						{
+							Namespaces = new SortedDictionary<string, bool>();
+							namespacesPerNamespace[ParentNamespace] = Namespaces;
+						}
+						else
+						{
+							if (Namespaces.ContainsKey(Namespace))
+								break;
+						}
+
+						Namespaces[Namespace] = true;
+						Namespace = ParentNamespace;
+						i = Namespace.LastIndexOf('.');
+					}
+
+					if (i < 0)
+					{
+						rootNamespaces[Namespace] = true;
+						RegisterQualifiedName(Namespace, Namespace);
+					}
+				}
+
+				LastNamespace = Namespace;
+				LastTypes = Types;
+			}
+
+			Types[TypeName] = Type;
 		}
 
 		private static void RegisterQualifiedName(string UnqualifiedName, string QualifiedName)
